@@ -21,5 +21,5 @@ export const firebaseConfig = {
 
 export const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
-export const db = getFirestore(app);       // sites, versions, logs, chats, groups
+export const db = getFirestore(app, "default"); // named database "default" — NOT the same as the reserved "(default)" DB id, hence the earlier "database (default) does not exist" 404
 export const rtdb = getDatabase(app);      // user profiles + status (admins/, users/)

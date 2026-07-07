@@ -269,6 +269,24 @@ table.data-table tr:hover td{background:var(--surface-2);}
 .badge{font-size:10px;padding:2px 7px;border-radius:20px;background:var(--surface-2);border:1px solid var(--border);}
 .badge.blocked{color:var(--remove);border-color:rgba(249,117,131,.4);}
 .badge.ok{color:var(--add);border-color:rgba(126,231,135,.4);}
+
+#status-banner{
+  padding:10px 20px;font-size:13px;font-weight:500;
+  border-bottom:1px solid var(--border);
+}
+#status-banner.status-active{background:rgba(126,231,135,.08);color:var(--add);}
+#status-banner.status-inactive{background:rgba(249,117,131,.1);color:var(--remove);}
+
+#review-request-box{
+  padding:14px 20px;border-bottom:1px solid var(--border);background:var(--surface);
+}
+#review-request-box textarea{
+  width:100%;max-width:520px;min-height:70px;resize:vertical;
+  background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius);
+  color:var(--text);font-family:inherit;font-size:13px;padding:8px;margin:8px 0;
+}
+#review-request-box button{width:auto;}
+#review-request-status{font-size:12px;color:var(--muted);margin-top:6px;}
 .row-actions{display:flex;gap:6px;flex-wrap:wrap;}
 .row-actions button{font-size:10px;padding:4px 8px;}
 .section-toolbar{

@@ -67,7 +67,14 @@
 
     <!-- ===== USERS ===== -->
     <div class="section-view" id="section-users">
-      <div style="flex:1;display:flex;flex-direction:column;min-height:0;">
+      <div style="flex:1;display:flex;flex-direction:column;min-height:0;overflow:auto;">
+        <div class="section-toolbar">
+          <strong style="font-size:13px;">Status review requests</strong>
+        </div>
+        <div class="panel-pad" id="review-requests-panel">
+          <p style="font-size:12px;color:var(--muted);">No pending requests.</p>
+        </div>
+
         <div class="section-toolbar">
           <strong style="font-size:13px;">All users</strong>
           <button id="new-user-btn" class="primary" style="width:auto;">+ New user</button>

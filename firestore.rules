@@ -83,5 +83,13 @@ service cloud.firestore {
       allow update: if isAdmin(); // only admin approves/denies
       allow delete: if isAdmin();
     }
+
+    // ---------- Status review requests (submitted by a suspended/blocked/disabled user) ----------
+    match /statusReviewRequests/{reqId} {
+      allow read: if isAdmin() || (isSignedIn() && request.auth.uid == resource.data.uid);
+      allow create: if isSignedIn() && request.resource.data.uid == request.auth.uid;
+      allow update: if isAdmin(); // only admin marks reviewed/approved/denied
+      allow delete: if isAdmin();
+    }
   }
 }

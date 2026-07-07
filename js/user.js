@@ -4,7 +4,7 @@ import {
   collection, doc, getDoc, getDocs, setDoc, updateDoc,
   addDoc, query, orderBy, where, onSnapshot, serverTimestamp
 } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js";
-import { ref, get } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-database.js";
+import { ref, get, onValue } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-database.js";
 
 const MAX_EDITS_PER_VERSION = 5;
 
@@ -18,22 +18,136 @@ let localCode = { html: "", css: "", js: "" };
 let myGroups = {};
 let currentThread = null;
 
+// Human-readable copy for each non-active status — shown in the banner and used to explain
+// why actions are blocked. Anything not listed falls back to a generic message so a new
+// status value an admin invents later never leaks internals or shows "undefined".
+const STATUS_MESSAGES = {
+  suspended: "This account has been suspended by an admin.",
+  blocked: "This account has been blocked by an admin.",
+  disabled: "This account has been disabled by an admin."
+};
+
+let statusUnsub = null;
+let appInitted = false;
+
 onAuthStateChanged(auth, async (user) => {
   if (!user) { window.location.href = "index.html"; return; }
-  // Profile + live status now lives in the Realtime Database (written by the admin panel,
-  // no Cloud Functions needed) — mirrors the same check js/auth.js does at sign-in time,
-  // so a session that goes stale (e.g. suspended mid-session) still gets kicked out here.
-  const uSnap = await get(ref(rtdb, "users/" + user.uid));
-  if (!uSnap.exists() || uSnap.val().status !== "active") {
+  currentUser = user;
+
+  const uRef = ref(rtdb, "users/" + user.uid);
+  const snap = await get(uRef);
+  if (!snap.exists()) {
+    // No profile at all (never provisioned, or fully removed) — nothing to review, so
+    // there's no "suspended" state to show here; just send them back to sign in.
     await signOut(auth);
     window.location.href = "index.html";
     return;
   }
-  currentUser = user;
-  currentUserData = uSnap.val();
-  init();
+
+  currentUserData = snap.val();
+  if (!appInitted) { init(); appInitted = true; }
+  renderStatusBanner();
+
+  // Live from here on: if an admin changes status while this tab is open, the banner and
+  // every action's authority check reflect it immediately, without needing a reload.
+  if (statusUnsub) statusUnsub();
+  statusUnsub = onValue(uRef, (s) => {
+    if (!s.exists()) { signOut(auth); window.location.href = "index.html"; return; }
+    currentUserData = s.val();
+    renderStatusBanner();
+  });
 });
 document.getElementById("logout-btn").addEventListener("click", () => signOut(auth));
+
+function isActive() {
+  return !!currentUserData && currentUserData.status === "active";
+}
+
+// Call at the top of every action that writes/mutates something. Re-checks the *current*
+// in-memory status (kept live by the onValue listener above) rather than trusting a value
+// fetched once at login, so a mid-session suspension takes effect on the very next action.
+function requireActive(actionLabel) {
+  if (isActive()) return true;
+  const status = currentUserData?.status || "unknown";
+  const reason = STATUS_MESSAGES[status] || "This account is not active.";
+  alert(`Can't ${actionLabel} — ${reason}\n\nSubmit a request for review below and an admin will need to reactivate your account first.`);
+  return false;
+}
+
+function renderStatusBanner() {
+  const banner = document.getElementById("status-banner");
+  const status = currentUserData?.status;
+
+  if (status === "active") {
+    banner.style.display = "block";
+    banner.className = "status-active";
+    banner.textContent = "Account status: Active — you have full access.";
+    document.getElementById("review-request-box").style.display = "none";
+    return;
+  }
+
+  banner.style.display = "block";
+  banner.className = "status-inactive";
+  banner.textContent = `Account status: ${status || "unknown"} — ${STATUS_MESSAGES[status] || "This account is not active."} ` +
+    `Editing sites and sending messages are disabled until an admin resolves this.`;
+  renderReviewRequestBox(status);
+}
+
+/* =========================================================
+   Status review request — lets a suspended/blocked/disabled
+   user ask an admin to re-review their account, instead of
+   just being locked out with no path forward.
+   ========================================================= */
+async function renderReviewRequestBox(status) {
+  const box = document.getElementById("review-request-box");
+  box.style.display = "block";
+
+  // Don't let someone spam multiple requests — check for an existing unresolved one first.
+  const existingQ = query(
+    collection(db, "statusReviewRequests"),
+    where("uid", "==", currentUser.uid),
+    where("reviewed", "==", false)
+  );
+  const existingSnap = await getDocs(existingQ);
+  if (!existingSnap.empty) {
+    box.innerHTML = `<strong style="font-size:12px;">Review request submitted</strong>
+      <p style="font-size:12px;color:var(--muted);margin:6px 0 0;">
+        Your account is ${escapeHtml(status)}. A request for review is already pending — an admin will follow up.
+      </p>`;
+    return;
+  }
+
+  box.innerHTML = `
+    <strong style="font-size:12px;">Request a review</strong>
+    <p style="font-size:12px;color:var(--muted);margin:4px 0 0;">
+      Explain why you think this account should be reactivated. An admin will see this request.
+    </p>
+    <textarea id="review-request-msg" placeholder="Optional message to the admin…"></textarea><br>
+    <button id="submit-review-request-btn" class="primary">Submit for review</button>
+    <div id="review-request-status"></div>
+  `;
+
+  document.getElementById("submit-review-request-btn").addEventListener("click", async () => {
+    const msg = document.getElementById("review-request-msg").value.trim();
+    const statusEl = document.getElementById("review-request-status");
+    try {
+      await addDoc(collection(db, "statusReviewRequests"), {
+        uid: currentUser.uid,
+        name: currentUserData.name || currentUser.email,
+        email: currentUser.email,
+        statusAtRequest: status,
+        message: msg,
+        reviewed: false,
+        submittedAt: serverTimestamp()
+      });
+      statusEl.textContent = "Request submitted — an admin will review your account.";
+      statusEl.style.color = "var(--add)";
+    } catch (err) {
+      statusEl.textContent = "Could not submit request. Try again.";
+      statusEl.style.color = "var(--remove)";
+    }
+  });
+}
 
 function init() {
   wireSectionTabs();
@@ -124,6 +238,7 @@ function setTab(lang) {
 
 document.getElementById("save-version-btn").addEventListener("click", async () => {
   if (!currentSiteId) return;
+  if (!requireActive("save changes")) return;
   localCode[activeTab] = codeArea.value;
   const msg = document.getElementById("commit-msg").value.trim() || "Update";
   const author = { uid: currentUser.uid, name: currentUserData.name || currentUser.email, role: "user" };
@@ -185,6 +300,7 @@ async function loadHistory(siteId) {
 }
 
 async function rollback(versionId) {
+  if (!requireActive("restore a version")) return;
   const vSnap = await getDoc(doc(db, "sites", currentSiteId, "versions", versionId));
   if (!vSnap.exists()) return;
   const v = vSnap.data();
@@ -244,6 +360,7 @@ function renderRequestBox() {
     btn.style.cssText = "font-size:11px;margin-top:6px;width:100%;";
     btn.textContent = `Request chat with ${uid.slice(0, 6)}…`;
     btn.addEventListener("click", async () => {
+      if (!requireActive("request a chat")) return;
       await addDoc(collection(db, "chatRequests"), {
         fromUid: currentUser.uid, targetUid: uid, status: "pending", at: serverTimestamp()
       });
@@ -284,6 +401,7 @@ document.getElementById("chat-input-box").addEventListener("keydown", (e) => { i
 
 async function sendChatMessage() {
   if (!currentThread) return;
+  if (!requireActive("send a message")) return;
   const input = document.getElementById("chat-input-box");
   const text = input.value.trim();
   if (!text) return;

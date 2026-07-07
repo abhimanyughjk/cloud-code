@@ -62,6 +62,7 @@ function init() {
   listenToUsers();
   listenToLogs();
   listenToThreadsAndChat();
+  listenToReviewRequests();
   wireSectionTabs();
 }
 
@@ -363,6 +364,55 @@ function renderUsersTable() {
         `Their login attempts will simply be rejected at sign-in.`)) return;
       await remove(ref(rtdb, `users/${uid}`));
       await logAction("user_deleted", `Deleted user profile for ${email}`);
+    });
+  });
+}
+
+/* =========================================================
+   STATUS REVIEW REQUESTS — submitted by suspended/blocked/
+   disabled users from user.html asking to be reactivated.
+   ========================================================= */
+const reviewRequestsPanel = document.getElementById("review-requests-panel");
+
+function listenToReviewRequests() {
+  const q = query(collection(db, "statusReviewRequests"), where("reviewed", "==", false));
+  onSnapshot(q, (snap) => renderReviewRequests(snap));
+}
+
+function renderReviewRequests(snap) {
+  if (snap.empty) {
+    reviewRequestsPanel.innerHTML = `<p style="font-size:12px;color:var(--muted);">No pending requests.</p>`;
+    return;
+  }
+  reviewRequestsPanel.innerHTML = "";
+  snap.forEach((docSnap) => {
+    const r = docSnap.data();
+    const row = document.createElement("div");
+    row.style.cssText = "border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px;margin-bottom:8px;";
+    row.innerHTML = `
+      <div style="font-size:13px;"><strong>${escapeHtml(r.name || r.email)}</strong>
+        <span class="badge blocked" style="margin-left:6px;">${escapeHtml(r.statusAtRequest || "unknown")}</span>
+      </div>
+      <div style="font-size:12px;color:var(--muted);margin:4px 0;">${escapeHtml(r.email)}</div>
+      ${r.message ? `<div style="font-size:12px;margin:6px 0;">"${escapeHtml(r.message)}"</div>` : ""}
+      <div class="row-actions" style="margin-top:6px;">
+        <button data-action="approve" data-id="${docSnap.id}" data-uid="${r.uid}">Reactivate</button>
+        <button data-action="dismiss" data-id="${docSnap.id}">Dismiss</button>
+      </div>`;
+    reviewRequestsPanel.appendChild(row);
+  });
+
+  reviewRequestsPanel.querySelectorAll("button[data-action=approve]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const uid = btn.dataset.uid;
+      await update(ref(rtdb, `users/${uid}`), { status: "active" });
+      await updateDoc(doc(db, "statusReviewRequests", btn.dataset.id), { reviewed: true, outcome: "approved" });
+      await logAction("user_reactivated", `Reactivated ${usersCache[uid]?.email || uid} via review request`);
+    });
+  });
+  reviewRequestsPanel.querySelectorAll("button[data-action=dismiss]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      await updateDoc(doc(db, "statusReviewRequests", btn.dataset.id), { reviewed: true, outcome: "dismissed" });
     });
   });
 }
