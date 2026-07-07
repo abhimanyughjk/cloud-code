@@ -16,6 +16,7 @@ let currentVersionDoc = null;
 let activeTab = "html";
 let localCode = { html: "", css: "", js: "" };
 let myGroups = {};
+let mySitesCache = {}; // siteId -> site doc data, kept live by listenToMySites(), used to label group details
 let currentThread = null;
 
 // Human-readable copy for each non-active status — shown in the banner and used to explain
@@ -218,8 +219,10 @@ function listenToMySites() {
   const q = query(collection(db, "sites"), where("assignedUsers", "array-contains", currentUser.uid));
   onSnapshot(q, (snap) => {
     siteListEl.innerHTML = "";
+    mySitesCache = {};
     snap.forEach((docSnap) => {
       const data = docSnap.data();
+      mySitesCache[docSnap.id] = data;
       const item = document.createElement("div");
       item.className = "site-item" + (docSnap.id === currentSiteId ? " active" : "");
       item.innerHTML = `<span>${escapeHtml(data.name)}</span><span class="ver-badge">${escapeHtml(data.latestVersionId || "-")}</span>`;
@@ -356,6 +359,11 @@ function listenToThreads() {
 
 function renderThreadList() {
   const list = document.getElementById("thread-list");
+  // IMPORTANT: build this list with real DOM nodes only (createElement/appendChild).
+  // Never use `list.innerHTML +=` here — that serializes the whole list back to a
+  // string (including the Admin item, which already has a click listener attached)
+  // and re-parses it, silently stripping every listener attached so far. That's why
+  // the Admin thread stopped being clickable.
   list.innerHTML = "";
   const adminItem = document.createElement("div");
   adminItem.className = "thread-item" + (currentThread?.type === "admin" ? " active" : "");
@@ -363,13 +371,22 @@ function renderThreadList() {
   adminItem.addEventListener("click", () => openThread("admin", currentUser.uid, "Admin"));
   list.appendChild(adminItem);
 
-  list.innerHTML += "<div style='padding:8px 14px;font-size:10px;color:var(--muted);'>GROUPS</div>";
+  const groupsLabel = document.createElement("div");
+  groupsLabel.style.cssText = "padding:8px 14px;font-size:10px;color:var(--muted);";
+  groupsLabel.textContent = "GROUPS";
+  list.appendChild(groupsLabel);
+
   Object.entries(myGroups).forEach(([gid, g]) => {
     const item = document.createElement("div");
     item.className = "thread-item" + (currentThread?.type === "group" && currentThread.id === gid ? " active" : "");
-    item.innerHTML = `<span class="t-name">${escapeHtml(g.name)}</span>`;
+    const memberCount = (g.members || []).length;
+    const siteName = g.siteId && mySitesCache[g.siteId] ? mySitesCache[g.siteId].name : (g.siteId ? "site" : null);
+    const detailBits = [`${memberCount} member${memberCount === 1 ? "" : "s"}`];
+    if (siteName) detailBits.push(siteName);
+    item.innerHTML = `<span class="t-main"><span class="t-name">${escapeHtml(g.name)}</span>` +
+      `<span class="t-site">${escapeHtml(detailBits.join(" · "))}</span></span>`;
     item.addEventListener("click", () => openThread("group", gid, g.name));
-    document.getElementById("thread-list").appendChild(item);
+    list.appendChild(item);
   });
 }
 
@@ -405,6 +422,19 @@ function openThread(type, id, label) {
   document.getElementById("chat-empty").style.display = "none";
   document.getElementById("chat-thread").style.display = "flex";
   document.getElementById("chat-title").textContent = label;
+
+  const detailsEl = document.getElementById("chat-details");
+  if (type === "group") {
+    const g = myGroups[id] || {};
+    const memberNames = (g.members || [])
+      .map((uid) => (uid === currentUser.uid ? "you" : uid.slice(0, 6) + "…"))
+      .join(", ");
+    const siteName = g.siteId && mySitesCache[g.siteId] ? mySitesCache[g.siteId].name : null;
+    detailsEl.textContent = (siteName ? `Site: ${siteName} — ` : "") + `Members: ${memberNames || "—"}`;
+  } else {
+    detailsEl.textContent = "";
+  }
+
   renderThreadList();
 
   if (unsubMessages) unsubMessages();

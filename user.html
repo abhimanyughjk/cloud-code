@@ -74,7 +74,12 @@
         <div class="chat-main">
           <div id="chat-empty" class="empty-state">Pick admin or a group to chat with.</div>
           <div id="chat-thread" style="display:none;flex:1;flex-direction:column;min-height:0;">
-            <div class="topbar"><h2 id="chat-title">—</h2></div>
+            <div class="topbar">
+              <div>
+                <h2 id="chat-title">—</h2>
+                <span class="repo-link" id="chat-details"></span>
+              </div>
+            </div>
             <div class="chat-messages" id="chat-messages"></div>
             <div class="chat-input">
               <input type="text" id="chat-input-box" placeholder="Type a message…">

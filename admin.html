@@ -162,6 +162,21 @@
           </p>
           <button id="save-settings-btn" class="primary" style="width:auto;">Save</button>
           <div id="settings-save-status"></div>
+
+          <hr style="border:none;border-top:1px solid var(--border);margin:20px 0;">
+
+          <label>Allowed file extensions (Site file manager)</label>
+          <p style="font-size:11px;color:var(--muted);margin:-8px 0 12px;">
+            Controls which file types can be uploaded via <strong>Sites → + Add file</strong>. Add or
+            remove extensions below, then click Save. Leave empty to allow any file type.
+          </p>
+          <div id="ext-list" class="ext-list"></div>
+          <div style="display:flex;gap:8px;margin:10px 0;">
+            <input type="text" id="new-ext-input" placeholder="e.g. pdf, png, zip" style="margin:0;">
+            <button id="add-ext-btn" style="width:auto;">+ Add</button>
+          </div>
+          <button id="save-extensions-btn" class="primary" style="width:auto;">Save allowed extensions</button>
+          <div id="extensions-save-status"></div>
         </div>
       </div>
     </div>

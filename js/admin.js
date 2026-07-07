@@ -47,8 +47,9 @@ let localCode = { html: "", css: "", js: "" };
 let usersCache = {}; // uid -> user doc data
 let sitesCache = {}; // siteId -> site doc data (kept live by listenToSites)
 let currentThread = null; // { type:'user'|'group', id }
-let globalSettings = {}; // settings/global doc (hostingDomain, etc.)
+let globalSettings = {}; // settings/global doc (hostingDomain, allowedExtensions, etc.)
 let unsubAssets = null;
+let pendingExtensions = []; // extensions being edited in Settings, before "Save allowed extensions"
 
 // ---------------- Auth guard ----------------
 onAuthStateChanged(auth, async (user) => {
@@ -382,11 +383,27 @@ function listenAssets(siteId) {
   });
 }
 
+function fileExtension(name) {
+  const m = /\.([a-z0-9]+)$/i.exec(name || "");
+  return m ? m[1].toLowerCase() : "";
+}
+
+function isExtensionAllowed(name) {
+  const allowed = globalSettings.allowedExtensions || [];
+  if (allowed.length === 0) return true; // empty list = no restriction
+  return allowed.includes(fileExtension(name));
+}
+
 document.getElementById("add-asset-btn").addEventListener("click", () => document.getElementById("asset-input").click());
 document.getElementById("asset-input").addEventListener("change", async (e) => {
   if (!currentSiteId) { e.target.value = ""; return; }
   const files = [...e.target.files];
   for (const file of files) {
+    if (!isExtensionAllowed(file.name)) {
+      alert(`"${file.name}" was not uploaded: ".${fileExtension(file.name) || "?"}" isn't in the allowed file types.\n` +
+        `An admin can add it under Settings → Allowed file extensions.`);
+      continue;
+    }
     if (file.size > MAX_ASSET_BYTES) {
       alert(`"${file.name}" is too large (${Math.round(file.size / 1024)}KB). Keep files under ~${Math.round(MAX_ASSET_BYTES / 1024)}KB.`);
       continue;
@@ -439,6 +456,10 @@ async function loadSettings() {
   }
   const input = document.getElementById("hosting-domain-input");
   if (input) input.value = globalSettings.hostingDomain || "";
+
+  pendingExtensions = [...(globalSettings.allowedExtensions || [])];
+  renderExtList();
+  applyAssetInputAccept();
 }
 
 document.getElementById("save-settings-btn").addEventListener("click", async () => {
@@ -451,6 +472,75 @@ document.getElementById("save-settings-btn").addEventListener("click", async () 
     }, { merge: true });
     globalSettings.hostingDomain = domain;
     await logAction("settings_updated", `Set hosting domain to "${domain}"`);
+    statusEl.textContent = "Saved.";
+    statusEl.style.color = "var(--add)";
+  } catch (err) {
+    statusEl.textContent = "Could not save: " + err.message;
+    statusEl.style.color = "var(--remove)";
+  }
+});
+
+/* =========================================================
+   ALLOWED FILE EXTENSIONS (Site file manager, "+ Add file")
+   Stored at settings/global.allowedExtensions (array of lowercase
+   extensions without the leading dot). Empty array = no restriction.
+   ========================================================= */
+function normalizeExtension(raw) {
+  return raw.trim().toLowerCase().replace(/^\./, "").replace(/[^a-z0-9]/g, "");
+}
+
+function renderExtList() {
+  const box = document.getElementById("ext-list");
+  if (!box) return;
+  box.innerHTML = "";
+  if (pendingExtensions.length === 0) {
+    box.innerHTML = `<p style="font-size:11px;color:var(--muted);margin:0;">No restriction — any file type can be uploaded.</p>`;
+    return;
+  }
+  pendingExtensions.forEach((ext) => {
+    const chip = document.createElement("span");
+    chip.className = "ext-chip";
+    chip.innerHTML = `.${escapeHtml(ext)}<button data-ext="${escapeHtml(ext)}" title="Remove">✕</button>`;
+    chip.querySelector("button").addEventListener("click", () => {
+      pendingExtensions = pendingExtensions.filter((e) => e !== ext);
+      renderExtList();
+    });
+    box.appendChild(chip);
+  });
+}
+
+function addExtensionFromInput() {
+  const input = document.getElementById("new-ext-input");
+  const raw = input.value;
+  if (!raw.trim()) return;
+  raw.split(",").map(normalizeExtension).filter(Boolean).forEach((ext) => {
+    if (!pendingExtensions.includes(ext)) pendingExtensions.push(ext);
+  });
+  input.value = "";
+  renderExtList();
+}
+
+document.getElementById("add-ext-btn").addEventListener("click", addExtensionFromInput);
+document.getElementById("new-ext-input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { e.preventDefault(); addExtensionFromInput(); }
+});
+
+function applyAssetInputAccept() {
+  const assetInput = document.getElementById("asset-input");
+  if (!assetInput) return;
+  const exts = globalSettings.allowedExtensions || [];
+  assetInput.setAttribute("accept", exts.length ? exts.map((e) => "." + e).join(",") : "");
+}
+
+document.getElementById("save-extensions-btn").addEventListener("click", async () => {
+  const statusEl = document.getElementById("extensions-save-status");
+  try {
+    await setDoc(doc(db, "settings", "global"), {
+      allowedExtensions: pendingExtensions, updatedAt: serverTimestamp(), updatedBy: currentUser.uid
+    }, { merge: true });
+    globalSettings.allowedExtensions = [...pendingExtensions];
+    applyAssetInputAccept();
+    await logAction("settings_updated", `Set allowed file extensions to: ${pendingExtensions.join(", ") || "(any)"}`);
     statusEl.textContent = "Saved.";
     statusEl.style.color = "var(--add)";
   } catch (err) {
@@ -713,9 +803,22 @@ function listenToThreadsAndChat() {
   });
 }
 
+function threadListLabel(text) {
+  const label = document.createElement("div");
+  label.style.cssText = "padding:8px 14px;font-size:10px;color:var(--muted);";
+  label.textContent = text;
+  return label;
+}
+
 function renderThreadList() {
   const list = document.getElementById("thread-list");
-  list.innerHTML = "<div style='padding:8px 14px;font-size:10px;color:var(--muted);'>USERS</div>";
+  // IMPORTANT: build this list with real DOM nodes only (createElement/appendChild).
+  // Never use `list.innerHTML +=` here — that serializes the whole list (including
+  // items that already have addEventListener click handlers attached) back to a
+  // string and re-parses it, which silently strips every listener already attached
+  // and is why thread items stopped being clickable.
+  list.innerHTML = "";
+  list.appendChild(threadListLabel("USERS"));
   Object.entries(usersCache).forEach(([uid, u]) => {
     const item = document.createElement("div");
     item.className = "thread-item" + (currentThread?.type === "user" && currentThread.id === uid ? " active" : "");
@@ -723,7 +826,7 @@ function renderThreadList() {
     item.addEventListener("click", () => openThread("user", uid, u.name || u.email));
     list.appendChild(item);
   });
-  list.innerHTML += "<div style='padding:8px 14px;font-size:10px;color:var(--muted);'>GROUPS</div>";
+  list.appendChild(threadListLabel("GROUPS"));
   Object.entries(window._groupsCache || {}).forEach(([gid, g]) => {
     const item = document.createElement("div");
     item.className = "thread-item" + (currentThread?.type === "group" && currentThread.id === gid ? " active" : "");
