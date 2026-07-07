@@ -42,6 +42,19 @@ service cloud.firestore {
         allow update: if (isAdmin() || isAssigned(siteId)) && resource.data.locked == false;
         allow delete: if false; // history is permanent
       }
+
+      // Per-site file attachments (any file type) + the site screenshot, stored as
+      // base64 data URLs. Kept well under Firestore's 1MB doc cap on the client side.
+      match /assets/{assetId} {
+        allow read: if isAdmin() || isAssigned(siteId);
+        allow create, update, delete: if isAdmin() || isAssigned(siteId);
+      }
+    }
+
+    // ---------- Global settings (e.g. the hosting domain for loader snippets) ----------
+    match /settings/{docId} {
+      allow read: if isAdmin();
+      allow write: if isAdmin();
     }
 
     // ---------- Action logs (admin-only visibility) ----------

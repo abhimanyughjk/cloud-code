@@ -45,7 +45,10 @@ let currentVersionDoc = null; // the editable "latest" version
 let activeTab = "html";
 let localCode = { html: "", css: "", js: "" };
 let usersCache = {}; // uid -> user doc data
+let sitesCache = {}; // siteId -> site doc data (kept live by listenToSites)
 let currentThread = null; // { type:'user'|'group', id }
+let globalSettings = {}; // settings/global doc (hostingDomain, etc.)
+let unsubAssets = null;
 
 // ---------------- Auth guard ----------------
 onAuthStateChanged(auth, async (user) => {
@@ -63,7 +66,9 @@ function init() {
   listenToLogs();
   listenToThreadsAndChat();
   listenToReviewRequests();
+  loadSettings();
   wireSectionTabs();
+  wireSidebarToggle();
 }
 
 // ---------------- Section tabs ----------------
@@ -109,15 +114,25 @@ const siteListEl = document.getElementById("site-list");
 
 function listenToSites() {
   onSnapshot(query(collection(db, "sites"), orderBy("name")), (snap) => {
+    sitesCache = {};
     siteListEl.innerHTML = "";
     snap.forEach((docSnap) => {
       const data = docSnap.data();
+      sitesCache[docSnap.id] = data;
       const item = document.createElement("div");
       item.className = "site-item" + (docSnap.id === currentSiteId ? " active" : "");
-      item.innerHTML = `<span>${escapeHtml(data.name)}</span><span class="ver-badge">${escapeHtml(data.latestVersionId || "-")}</span>`;
+      const thumb = data.screenshot ? `<img class="site-thumb" src="${data.screenshot}" alt="">` : "";
+      item.innerHTML = `<span class="site-item-main">${thumb}<span class="site-item-name">${escapeHtml(data.name)}</span></span><span class="ver-badge">${escapeHtml(data.latestVersionId || "-")}</span>`;
+      item.title = data.name;
       item.addEventListener("click", () => selectSite(docSnap.id));
       siteListEl.appendChild(item);
     });
+  });
+}
+
+function wireSidebarToggle() {
+  document.getElementById("sidebar-toggle").addEventListener("click", () => {
+    document.getElementById("sites-sidebar").classList.toggle("collapsed");
   });
 }
 
@@ -165,8 +180,11 @@ async function selectSite(siteId) {
 
   emptyState.style.display = "none";
   editorView.style.display = "flex";
+  document.getElementById("sites-sidebar").classList.add("collapsed");
   setTab("html");
   loadHistory(siteId);
+  renderScreenshotPreview(currentSiteData.screenshot || null);
+  listenAssets(siteId);
 }
 
 document.querySelectorAll(".tab").forEach((tabEl) => {
@@ -262,16 +280,183 @@ document.getElementById("delete-site-btn").addEventListener("click", async () =>
   if (!confirm(`Delete "${currentSiteData.name}"? This cannot be undone.`)) return;
   await logAction("site_deleted", `Deleted site "${currentSiteData.name}"`, currentSiteId);
   await deleteDoc(doc(db, "sites", currentSiteId));
+  if (unsubAssets) { unsubAssets(); unsubAssets = null; }
   currentSiteId = null;
   editorView.style.display = "none";
   emptyState.style.display = "flex";
+  document.getElementById("sites-sidebar").classList.remove("collapsed");
 });
 
 document.getElementById("copy-loader-btn").addEventListener("click", () => {
   if (!currentSiteId) return;
-  const snippet = `<script src="https://YOUR_HOSTING_DOMAIN/loader/site-loader.js" data-site-id="${currentSiteId}"><\/script>`;
+  const domain = (globalSettings.hostingDomain || "").trim();
+  const host = domain ? domain.replace(/^https?:\/\//, "").replace(/\/$/, "") : "YOUR_HOSTING_DOMAIN";
+  const snippet = `<script src="https://${host}/loader/site-loader.js" data-site-id="${currentSiteId}"><\/script>`;
   navigator.clipboard.writeText(snippet);
-  alert("Loader snippet copied.");
+  if (!domain) {
+    alert("Loader snippet copied — but no hosting domain is saved yet. Go to Settings and save one so this URL actually works.");
+  } else {
+    alert("Loader snippet copied.");
+  }
+});
+
+document.getElementById("site-settings-btn").addEventListener("click", () => {
+  if (!currentSiteId) return;
+  const overlay = openModal(`
+    <h3>Site settings</h3>
+    <label>Site name</label><input type="text" id="ss-name" value="${escapeHtml(currentSiteData.name)}">
+    <label>GitHub repo URL</label><input type="text" id="ss-repo" value="${escapeHtml(currentSiteData.repo || "")}">
+    <label>Description (optional)</label><input type="text" id="ss-desc" value="${escapeHtml(currentSiteData.description || "")}">
+    <div class="modal-actions">
+      <button class="ghost" id="ss-cancel">Cancel</button>
+      <button class="primary" style="width:auto;" id="ss-save">Save</button>
+    </div>
+  `);
+  overlay.querySelector("#ss-cancel").addEventListener("click", () => overlay.remove());
+  overlay.querySelector("#ss-save").addEventListener("click", async () => {
+    const name = overlay.querySelector("#ss-name").value.trim() || currentSiteData.name;
+    const repo = overlay.querySelector("#ss-repo").value.trim();
+    const description = overlay.querySelector("#ss-desc").value.trim();
+    await updateDoc(doc(db, "sites", currentSiteId), { name, repo, description, updatedAt: serverTimestamp() });
+    await logAction("site_settings_updated", `Updated settings for "${name}"`, currentSiteId);
+    currentSiteData.name = name;
+    currentSiteData.repo = repo;
+    currentSiteData.description = description;
+    document.getElementById("site-name").textContent = name;
+    document.getElementById("site-repo").textContent =
+      `${repo || "no repo linked"} · editing v${currentSiteData.latestVersionId} ` +
+      `(${currentVersionDoc.editCount || 0}/${MAX_EDITS_PER_VERSION} edits) · live: v${currentSiteData.liveVersionId}`;
+    overlay.remove();
+  });
+});
+
+/* =========================================================
+   SITE ASSETS (arbitrary files + a screenshot per site)
+   ========================================================= */
+const MAX_ASSET_BYTES = 700000; // headroom under Firestore's 1MB document cap
+
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error || new Error("Could not read file"));
+    reader.readAsDataURL(file);
+  });
+}
+
+function renderScreenshotPreview(dataUrl) {
+  const img = document.getElementById("screenshot-img");
+  const ph = document.getElementById("screenshot-placeholder");
+  if (dataUrl) { img.src = dataUrl; img.style.display = "block"; ph.style.display = "none"; }
+  else { img.removeAttribute("src"); img.style.display = "none"; ph.style.display = "flex"; }
+}
+
+function listenAssets(siteId) {
+  if (unsubAssets) unsubAssets();
+  const list = document.getElementById("asset-list");
+  unsubAssets = onSnapshot(collection(db, "sites", siteId, "assets"), (snap) => {
+    list.innerHTML = "";
+    if (snap.empty) { list.innerHTML = '<p style="font-size:11px;color:var(--muted);">No files yet.</p>'; return; }
+    snap.forEach((d) => {
+      const a = d.data();
+      const kb = a.size ? Math.max(1, Math.round(a.size / 1024)) : 0;
+      const row = document.createElement("div");
+      row.className = "asset-row";
+      row.innerHTML = `
+        <span class="asset-name" title="${escapeHtml(a.mime || "")}">${escapeHtml(a.name)}</span>
+        <span class="asset-size">${kb}KB</span>
+        <a class="asset-dl" href="${a.content}" download="${escapeHtml(a.name)}" title="Download">↓</a>
+        <button class="asset-del" data-id="${d.id}" title="Delete">✕</button>`;
+      list.appendChild(row);
+    });
+    list.querySelectorAll(".asset-del").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        if (!confirm("Delete this file?")) return;
+        await deleteDoc(doc(db, "sites", currentSiteId, "assets", btn.dataset.id));
+        await logAction("asset_deleted", "Deleted a site file", currentSiteId);
+      });
+    });
+  }, (err) => {
+    console.error("[assets]", err);
+    list.innerHTML = `<p style="font-size:11px;color:var(--remove);">Failed to load files: ${escapeHtml(err.message)}</p>`;
+  });
+}
+
+document.getElementById("add-asset-btn").addEventListener("click", () => document.getElementById("asset-input").click());
+document.getElementById("asset-input").addEventListener("change", async (e) => {
+  if (!currentSiteId) { e.target.value = ""; return; }
+  const files = [...e.target.files];
+  for (const file of files) {
+    if (file.size > MAX_ASSET_BYTES) {
+      alert(`"${file.name}" is too large (${Math.round(file.size / 1024)}KB). Keep files under ~${Math.round(MAX_ASSET_BYTES / 1024)}KB.`);
+      continue;
+    }
+    try {
+      const dataUrl = await readFileAsDataUrl(file);
+      await addDoc(collection(db, "sites", currentSiteId, "assets"), {
+        name: file.name, mime: file.type || "application/octet-stream", size: file.size,
+        content: dataUrl, uploadedBy: currentUser.uid, createdAt: serverTimestamp()
+      });
+      await logAction("asset_uploaded", `Uploaded file "${file.name}"`, currentSiteId);
+    } catch (err) {
+      alert(`Could not upload "${file.name}": ${err.message}`);
+    }
+  }
+  e.target.value = "";
+});
+
+document.getElementById("screenshot-btn").addEventListener("click", () => document.getElementById("screenshot-input").click());
+document.getElementById("screenshot-input").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  if (!currentSiteId || !file) { e.target.value = ""; return; }
+  if (file.size > MAX_ASSET_BYTES) {
+    alert(`Screenshot is too large (${Math.round(file.size / 1024)}KB). Keep it under ~${Math.round(MAX_ASSET_BYTES / 1024)}KB.`);
+    e.target.value = "";
+    return;
+  }
+  try {
+    const dataUrl = await readFileAsDataUrl(file);
+    await updateDoc(doc(db, "sites", currentSiteId), { screenshot: dataUrl, updatedAt: serverTimestamp() });
+    currentSiteData.screenshot = dataUrl;
+    renderScreenshotPreview(dataUrl);
+    await logAction("screenshot_updated", "Updated site screenshot", currentSiteId);
+  } catch (err) {
+    alert("Could not upload screenshot: " + err.message);
+  }
+  e.target.value = "";
+});
+
+/* =========================================================
+   GLOBAL SETTINGS (hosting domain used by every loader snippet)
+   ========================================================= */
+async function loadSettings() {
+  try {
+    const snap = await getDoc(doc(db, "settings", "global"));
+    globalSettings = snap.exists() ? snap.data() : {};
+  } catch (err) {
+    console.error("[settings]", err);
+    globalSettings = {};
+  }
+  const input = document.getElementById("hosting-domain-input");
+  if (input) input.value = globalSettings.hostingDomain || "";
+}
+
+document.getElementById("save-settings-btn").addEventListener("click", async () => {
+  const statusEl = document.getElementById("settings-save-status");
+  const raw = document.getElementById("hosting-domain-input").value.trim();
+  const domain = raw.replace(/^https?:\/\//, "").replace(/\/$/, "");
+  try {
+    await setDoc(doc(db, "settings", "global"), {
+      hostingDomain: domain, updatedAt: serverTimestamp(), updatedBy: currentUser.uid
+    }, { merge: true });
+    globalSettings.hostingDomain = domain;
+    await logAction("settings_updated", `Set hosting domain to "${domain}"`);
+    statusEl.textContent = "Saved.";
+    statusEl.style.color = "var(--add)";
+  } catch (err) {
+    statusEl.textContent = "Could not save: " + err.message;
+    statusEl.style.color = "var(--remove)";
+  }
 });
 
 document.getElementById("assign-users-btn").addEventListener("click", () => {
@@ -542,9 +727,56 @@ function renderThreadList() {
   Object.entries(window._groupsCache || {}).forEach(([gid, g]) => {
     const item = document.createElement("div");
     item.className = "thread-item" + (currentThread?.type === "group" && currentThread.id === gid ? " active" : "");
-    item.innerHTML = `<span class="t-name">${escapeHtml(g.name)}</span>`;
-    item.addEventListener("click", () => openThread("group", gid, g.name));
+    const siteLabel = g.siteId && sitesCache[g.siteId] ? `<span class="t-site">site: ${escapeHtml(sitesCache[g.siteId].name)}</span>` : "";
+    item.innerHTML = `<span class="t-main"><span class="t-name">${escapeHtml(g.name)}</span>${siteLabel}</span><button class="manage-group-btn" data-gid="${gid}" title="Manage group">⚙</button>`;
+    item.querySelector(".t-main").addEventListener("click", () => openThread("group", gid, g.name));
+    item.querySelector(".manage-group-btn").addEventListener("click", (e) => { e.stopPropagation(); openManageGroupModal(gid); });
     list.appendChild(item);
+  });
+}
+
+function openManageGroupModal(gid) {
+  const g = (window._groupsCache || {})[gid];
+  if (!g) return;
+  const rows = Object.entries(usersCache).map(([uid, u]) => `
+    <label><input type="checkbox" value="${uid}" ${(g.members || []).includes(uid) ? "checked" : ""}> ${escapeHtml(u.name || u.email)}</label>
+  `).join("") || "<p style='color:var(--muted);font-size:12px;'>No users yet.</p>";
+  const siteOptions = `<option value="">— none —</option>` + Object.entries(sitesCache)
+    .map(([sid, s]) => `<option value="${sid}" ${g.siteId === sid ? "selected" : ""}>${escapeHtml(s.name)}</option>`).join("");
+
+  const overlay = openModal(`
+    <h3>Manage group</h3>
+    <label>Group name</label><input type="text" id="mg-name" value="${escapeHtml(g.name)}">
+    <label>Affiliated site (optional)</label>
+    <select id="mg-site">${siteOptions}</select>
+    <label>Members</label>
+    <div class="checkbox-list">${rows}</div>
+    <div class="modal-actions">
+      <button class="danger" id="mg-delete" style="margin-right:auto;">Delete group</button>
+      <button class="ghost" id="mg-cancel">Cancel</button>
+      <button class="primary" style="width:auto;" id="mg-save">Save</button>
+    </div>
+  `);
+  overlay.querySelector("#mg-cancel").addEventListener("click", () => overlay.remove());
+  overlay.querySelector("#mg-delete").addEventListener("click", async () => {
+    if (!confirm(`Delete group "${g.name}"? This cannot be undone.`)) return;
+    await deleteDoc(doc(db, "groups", gid));
+    await logAction("group_deleted", `Deleted group "${g.name}"`);
+    if (currentThread?.type === "group" && currentThread.id === gid) {
+      currentThread = null;
+      if (unsubMessages) unsubMessages();
+      document.getElementById("chat-thread").style.display = "none";
+      document.getElementById("chat-empty").style.display = "flex";
+    }
+    overlay.remove();
+  });
+  overlay.querySelector("#mg-save").addEventListener("click", async () => {
+    const name = overlay.querySelector("#mg-name").value.trim() || g.name;
+    const siteId = overlay.querySelector("#mg-site").value || null;
+    const members = [...overlay.querySelectorAll("input[type=checkbox]:checked")].map((c) => c.value);
+    await updateDoc(doc(db, "groups", gid), { name, siteId, members });
+    await logAction("group_updated", `Updated group "${name}" (${members.length} member(s))`);
+    overlay.remove();
   });
 }
 
@@ -552,9 +784,13 @@ document.getElementById("new-group-btn").addEventListener("click", () => {
   const rows = Object.entries(usersCache).map(([uid, u]) => `
     <label><input type="checkbox" value="${uid}"> ${escapeHtml(u.name || u.email)}</label>
   `).join("") || "<p style='color:var(--muted);font-size:12px;'>No users yet.</p>";
+  const siteOptions = `<option value="">— none —</option>` + Object.entries(sitesCache)
+    .map(([sid, s]) => `<option value="${sid}">${escapeHtml(s.name)}</option>`).join("");
   const overlay = openModal(`
     <h3>New group</h3>
     <label>Group name</label><input type="text" id="grp-name">
+    <label>Affiliated site (optional)</label>
+    <select id="grp-site">${siteOptions}</select>
     <div class="checkbox-list">${rows}</div>
     <div class="modal-actions">
       <button class="ghost" id="grp-cancel">Cancel</button>
@@ -564,8 +800,9 @@ document.getElementById("new-group-btn").addEventListener("click", () => {
   overlay.querySelector("#grp-cancel").addEventListener("click", () => overlay.remove());
   overlay.querySelector("#grp-create").addEventListener("click", async () => {
     const name = overlay.querySelector("#grp-name").value.trim() || "Group";
+    const siteId = overlay.querySelector("#grp-site").value || null;
     const members = [...overlay.querySelectorAll("input[type=checkbox]:checked")].map((c) => c.value);
-    await addDoc(collection(db, "groups"), { name, members, createdBy: currentUser.uid, createdAt: serverTimestamp() });
+    await addDoc(collection(db, "groups"), { name, siteId, members, createdBy: currentUser.uid, createdAt: serverTimestamp() });
     await logAction("group_created", `Created group "${name}" with ${members.length} member(s)`);
     overlay.remove();
   });
@@ -581,8 +818,9 @@ function openThread(type, id, label) {
   if (unsubMessages) unsubMessages();
   const path = type === "user" ? ["chats", id, "messages"] : ["groups", id, "messages"];
   const q = query(collection(db, ...path), orderBy("at", "asc"));
+  const box = document.getElementById("chat-messages");
+  box.innerHTML = "Loading…";
   unsubMessages = onSnapshot(q, (snap) => {
-    const box = document.getElementById("chat-messages");
     box.innerHTML = "";
     snap.forEach((d) => {
       const m = d.data();
@@ -593,6 +831,9 @@ function openThread(type, id, label) {
       box.appendChild(el);
     });
     box.scrollTop = box.scrollHeight;
+  }, (err) => {
+    console.error("[chat]", err);
+    box.innerHTML = `<p style="color:var(--remove);font-size:12px;">Couldn't load this conversation: ${escapeHtml(err.message)}</p>`;
   });
 }
 

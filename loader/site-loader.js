@@ -21,7 +21,9 @@
   };
 
   // Firestore REST endpoint avoids needing the full SDK on every connected site.
-  const url = `https://firestore.googleapis.com/v1/projects/${firebaseConfig.projectId}/databases/(default)/documents/sites/${siteId}`;
+  // NOTE: this project's Firestore database is named "default" (a named database),
+  // not the reserved "(default)" database id — using "(default)" here 404s.
+  const url = `https://firestore.googleapis.com/v1/projects/${firebaseConfig.projectId}/databases/default/documents/sites/${siteId}`;
 
   try {
     const res = await fetch(url);

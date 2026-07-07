@@ -15,6 +15,7 @@
       <div class="section-tab" data-section="users">Users</div>
       <div class="section-tab" data-section="logs">Logs</div>
       <div class="section-tab" data-section="chat">Chat</div>
+      <div class="section-tab" data-section="settings">Settings</div>
     </div>
     <button id="logout-btn" class="ghost">Sign out</button>
   </div>
@@ -23,10 +24,14 @@
 
     <!-- ===== SITES ===== -->
     <div class="section-view active" id="section-sites">
-      <aside class="sidebar">
+      <aside class="sidebar" id="sites-sidebar">
+        <div class="sidebar-head">
+          <strong style="font-size:11px;color:var(--muted);">SITES</strong>
+          <button id="sidebar-toggle" class="ghost">☰</button>
+        </div>
         <div class="site-list" id="site-list"></div>
         <div class="sidebar-footer">
-          <button class="new-site-btn primary" id="new-site-btn">+ New site</button>
+          <button class="new-site-btn primary" id="new-site-btn"><span class="new-site-btn-label">+ New site</span><span aria-hidden="true">+</span></button>
         </div>
       </aside>
       <main class="main">
@@ -39,6 +44,7 @@
             </div>
             <div class="topbar-actions">
               <button id="assign-users-btn">Assign users</button>
+              <button id="site-settings-btn">Site settings</button>
               <button id="copy-loader-btn">Copy loader snippet</button>
               <button id="delete-site-btn" class="danger">Delete site</button>
             </div>
@@ -59,6 +65,20 @@
             <div class="history-col">
               <h3>VERSION HISTORY</h3>
               <div class="commit-log" id="commit-log"></div>
+            </div>
+            <div class="assets-col">
+              <h3>SITE ASSETS</h3>
+              <div class="asset-screenshot-box">
+                <img id="screenshot-img" style="display:none;" alt="Site screenshot">
+                <div id="screenshot-placeholder" class="asset-screenshot-placeholder">No screenshot yet</div>
+              </div>
+              <input type="file" id="screenshot-input" accept="image/*" style="display:none;">
+              <button id="screenshot-btn">Upload screenshot</button>
+              <div class="asset-list" id="asset-list"></div>
+              <div class="asset-footer">
+                <input type="file" id="asset-input" multiple style="display:none;">
+                <button id="add-asset-btn" class="primary">+ Add file</button>
+              </div>
             </div>
           </div>
         </div>
@@ -125,6 +145,23 @@
               <button id="chat-send-btn" class="primary">Send</button>
             </div>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== SETTINGS ===== -->
+    <div class="section-view" id="section-settings">
+      <div style="flex:1;overflow:auto;">
+        <div class="section-toolbar"><strong style="font-size:13px;">Global settings</strong></div>
+        <div class="settings-form">
+          <label>Hosting domain</label>
+          <input type="text" id="hosting-domain-input" placeholder="e.g. sites.example.com">
+          <p style="font-size:11px;color:var(--muted);margin:-8px 0 12px;">
+            Used to build the "Copy loader snippet" URL on every site: <code>https://&lt;domain&gt;/loader/site-loader.js</code>.
+            Save it once here and it applies to all sites.
+          </p>
+          <button id="save-settings-btn" class="primary" style="width:auto;">Save</button>
+          <div id="settings-save-status"></div>
         </div>
       </div>
     </div>

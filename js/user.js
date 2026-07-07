@@ -74,62 +74,90 @@ function requireActive(actionLabel) {
   return false;
 }
 
+function openModal(html) {
+  const overlay = document.createElement("div");
+  overlay.className = "modal-overlay";
+  overlay.innerHTML = `<div class="modal-box">${html}</div>`;
+  document.body.appendChild(overlay);
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
+  return overlay;
+}
+
+// Small pill next to "Sign out" showing account status. Clicking it opens a modal —
+// for an active account, just a confirmation; for anything else, the appeal form.
 function renderStatusBanner() {
-  const banner = document.getElementById("status-banner");
+  const pill = document.getElementById("status-pill");
   const status = currentUserData?.status;
+  const isOk = status === "active";
 
-  if (status === "active") {
-    banner.style.display = "block";
-    banner.className = "status-active";
-    banner.textContent = "Account status: Active — you have full access.";
-    document.getElementById("review-request-box").style.display = "none";
-    return;
-  }
+  pill.style.display = "inline-block";
+  pill.textContent = isOk ? "Active" : (status || "unknown");
+  pill.className = "status-pill " + (isOk ? "ok" : "blocked");
+  pill.onclick = () => (isOk ? openActiveStatusModal() : openAppealModal(status));
+}
 
-  banner.style.display = "block";
-  banner.className = "status-inactive";
-  banner.textContent = `Account status: ${status || "unknown"} — ${STATUS_MESSAGES[status] || "This account is not active."} ` +
-    `Editing sites and sending messages are disabled until an admin resolves this.`;
-  renderReviewRequestBox(status);
+function openActiveStatusModal() {
+  const overlay = openModal(`
+    <h3>Account status</h3>
+    <p style="font-size:13px;color:var(--muted);">Your account is active — you have full access.</p>
+    <div class="modal-actions"><button class="ghost" id="st-close">Close</button></div>
+  `);
+  overlay.querySelector("#st-close").addEventListener("click", () => overlay.remove());
 }
 
 /* =========================================================
-   Status review request — lets a suspended/blocked/disabled
-   user ask an admin to re-review their account, instead of
-   just being locked out with no path forward.
+   Status appeal — lets a suspended/blocked/disabled user ask
+   an admin to re-review their account, instead of just being
+   locked out with no path forward.
    ========================================================= */
-async function renderReviewRequestBox(status) {
-  const box = document.getElementById("review-request-box");
-  box.style.display = "block";
+async function openAppealModal(status) {
+  const overlay = openModal(`
+    <h3>Account ${escapeHtml(status || "unknown")}</h3>
+    <p style="font-size:13px;color:var(--muted);">${escapeHtml(STATUS_MESSAGES[status] || "This account is not active.")}
+      Editing sites and sending messages are disabled until an admin resolves this.</p>
+    <div id="appeal-body">Checking for an existing request…</div>
+  `);
+  const body = overlay.querySelector("#appeal-body");
 
   // Don't let someone spam multiple requests — check for an existing unresolved one first.
-  const existingQ = query(
-    collection(db, "statusReviewRequests"),
-    where("uid", "==", currentUser.uid),
-    where("reviewed", "==", false)
-  );
-  const existingSnap = await getDocs(existingQ);
-  if (!existingSnap.empty) {
-    box.innerHTML = `<strong style="font-size:12px;">Review request submitted</strong>
-      <p style="font-size:12px;color:var(--muted);margin:6px 0 0;">
-        Your account is ${escapeHtml(status)}. A request for review is already pending — an admin will follow up.
-      </p>`;
+  let existingSnap;
+  try {
+    const existingQ = query(
+      collection(db, "statusReviewRequests"),
+      where("uid", "==", currentUser.uid),
+      where("reviewed", "==", false)
+    );
+    existingSnap = await getDocs(existingQ);
+  } catch (err) {
+    body.innerHTML = `<p style="font-size:12px;color:var(--remove);">Could not check request status: ${escapeHtml(err.message)}</p>`;
     return;
   }
 
-  box.innerHTML = `
-    <strong style="font-size:12px;">Request a review</strong>
+  if (!existingSnap.empty) {
+    body.innerHTML = `<p style="font-size:12px;color:var(--muted);">
+      A request for review is already pending — an admin will follow up.
+    </p>
+    <div class="modal-actions"><button class="ghost" id="ap-close">Close</button></div>`;
+    body.querySelector("#ap-close").addEventListener("click", () => overlay.remove());
+    return;
+  }
+
+  body.innerHTML = `
+    <strong style="font-size:12px;">Appeal to admin</strong>
     <p style="font-size:12px;color:var(--muted);margin:4px 0 0;">
       Explain why you think this account should be reactivated. An admin will see this request.
     </p>
-    <textarea id="review-request-msg" placeholder="Optional message to the admin…"></textarea><br>
-    <button id="submit-review-request-btn" class="primary">Submit for review</button>
+    <textarea id="review-request-msg" placeholder="Optional message to the admin…"></textarea>
     <div id="review-request-status"></div>
+    <div class="modal-actions">
+      <button class="ghost" id="ap-cancel">Cancel</button>
+      <button class="primary" style="width:auto;" id="submit-review-request-btn">Submit for review</button>
+    </div>
   `;
-
-  document.getElementById("submit-review-request-btn").addEventListener("click", async () => {
-    const msg = document.getElementById("review-request-msg").value.trim();
-    const statusEl = document.getElementById("review-request-status");
+  body.querySelector("#ap-cancel").addEventListener("click", () => overlay.remove());
+  body.querySelector("#submit-review-request-btn").addEventListener("click", async () => {
+    const msg = body.querySelector("#review-request-msg").value.trim();
+    const statusEl = body.querySelector("#review-request-status");
     try {
       await addDoc(collection(db, "statusReviewRequests"), {
         uid: currentUser.uid,
@@ -142,6 +170,7 @@ async function renderReviewRequestBox(status) {
       });
       statusEl.textContent = "Request submitted — an admin will review your account.";
       statusEl.style.color = "var(--add)";
+      setTimeout(() => overlay.remove(), 1200);
     } catch (err) {
       statusEl.textContent = "Could not submit request. Try again.";
       statusEl.style.color = "var(--remove)";
@@ -381,8 +410,9 @@ function openThread(type, id, label) {
   if (unsubMessages) unsubMessages();
   const path = type === "admin" ? ["chats", currentUser.uid, "messages"] : ["groups", id, "messages"];
   const q = query(collection(db, ...path), orderBy("at", "asc"));
+  const box = document.getElementById("chat-messages");
+  box.innerHTML = "Loading…";
   unsubMessages = onSnapshot(q, (snap) => {
-    const box = document.getElementById("chat-messages");
     box.innerHTML = "";
     snap.forEach((d) => {
       const m = d.data();
@@ -393,6 +423,9 @@ function openThread(type, id, label) {
       box.appendChild(el);
     });
     box.scrollTop = box.scrollHeight;
+  }, (err) => {
+    console.error("[chat]", err);
+    box.innerHTML = `<p style="color:var(--remove);font-size:12px;">Couldn't load this conversation: ${escapeHtml(err.message)}</p>`;
   });
 }
 
