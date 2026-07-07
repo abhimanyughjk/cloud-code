@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cloud-Code · My sites</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+  <div class="topnav">
+    <div class="logo">CLOUD<span class="dot">-</span>CODE</div>
+    <div class="section-tabs">
+      <div class="section-tab active" data-section="sites">My sites</div>
+      <div class="section-tab" data-section="chat">Chat</div>
+    </div>
+    <button id="logout-btn" class="ghost">Sign out</button>
+  </div>
+
+  <div class="app-body">
+
+    <!-- ===== SITES (assigned only) ===== -->
+    <div class="section-view active" id="section-sites">
+      <aside class="sidebar">
+        <div class="site-list" id="site-list"></div>
+      </aside>
+      <main class="main">
+        <div id="empty-state" class="empty-state">You don't have any assigned sites yet — ask your admin.</div>
+        <div id="editor-view" style="display:none; flex:1; flex-direction:column; min-height:0;">
+          <div class="topbar">
+            <div>
+              <h2 id="site-name">—</h2>
+              <span class="repo-link" id="site-repo"></span>
+            </div>
+          </div>
+          <div class="workspace">
+            <div class="editor-col">
+              <div class="tabs">
+                <div class="tab active" data-lang="html">index.html</div>
+                <div class="tab" data-lang="css">style.css</div>
+                <div class="tab" data-lang="js">script.js</div>
+              </div>
+              <textarea class="code-area" id="code-area" spellcheck="false"></textarea>
+              <div class="editor-footer">
+                <input type="text" id="commit-msg" placeholder="What changed?">
+                <button id="save-version-btn" class="primary" style="width:auto;">Save</button>
+              </div>
+            </div>
+            <div class="history-col">
+              <h3>VERSION HISTORY</h3>
+              <div class="commit-log" id="commit-log"></div>
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <!-- ===== CHAT ===== -->
+    <div class="section-view" id="section-chat">
+      <div class="chat-layout" style="flex:1;">
+        <div class="chat-threads" id="chat-threads">
+          <div class="section-toolbar" style="border-bottom:1px solid var(--border);">
+            <strong style="font-size:12px;">Threads</strong>
+          </div>
+          <div id="thread-list"></div>
+          <div style="padding:14px;border-top:1px solid var(--border);">
+            <strong style="font-size:11px;color:var(--muted);">Request a chat</strong>
+            <div id="request-chat-box"></div>
+          </div>
+        </div>
+        <div class="chat-main">
+          <div id="chat-empty" class="empty-state">Pick admin or a group to chat with.</div>
+          <div id="chat-thread" style="display:none;flex:1;flex-direction:column;min-height:0;">
+            <div class="topbar"><h2 id="chat-title">—</h2></div>
+            <div class="chat-messages" id="chat-messages"></div>
+            <div class="chat-input">
+              <input type="text" id="chat-input-box" placeholder="Type a message…">
+              <button id="chat-send-btn" class="primary">Send</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <script type="module" src="js/user.js"></script>
+</body>
+</html>
