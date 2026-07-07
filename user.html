@@ -43,7 +43,10 @@
                 <div class="tab" data-lang="css">style.css</div>
                 <div class="tab" data-lang="js">script.js</div>
               </div>
-              <textarea class="code-area" id="code-area" spellcheck="false"></textarea>
+              <div class="code-wrap">
+                <div class="line-numbers" id="line-numbers">1</div>
+                <textarea class="code-area" id="code-area" spellcheck="false" wrap="off"></textarea>
+              </div>
               <div class="editor-footer">
                 <input type="text" id="commit-msg" placeholder="What changed?">
                 <button id="save-version-btn" class="primary" style="width:auto;">Save</button>

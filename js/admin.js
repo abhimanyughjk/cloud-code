@@ -163,6 +163,21 @@ const emptyState = document.getElementById("empty-state");
 const editorView = document.getElementById("editor-view");
 const codeArea = document.getElementById("code-area");
 const commitLog = document.getElementById("commit-log");
+const lineNumbersEl = document.getElementById("line-numbers");
+
+// Keeps the line-number gutter in sync with the code textarea: same line count,
+// same vertical scroll offset. Called on input, scroll, and whenever the tab
+// switch swaps codeArea.value programmatically (see setTab()).
+function syncLineNumbers() {
+  if (!lineNumbersEl) return;
+  const lineCount = codeArea.value.split("\n").length;
+  let out = "";
+  for (let i = 1; i <= lineCount; i++) out += i + "\n";
+  lineNumbersEl.textContent = out;
+  lineNumbersEl.scrollTop = codeArea.scrollTop;
+}
+codeArea.addEventListener("input", syncLineNumbers);
+codeArea.addEventListener("scroll", () => { lineNumbersEl.scrollTop = codeArea.scrollTop; });
 
 async function selectSite(siteId) {
   currentSiteId = siteId;
@@ -196,6 +211,7 @@ function setTab(lang) {
   activeTab = lang;
   document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.lang === lang));
   codeArea.value = localCode[lang];
+  syncLineNumbers();
 }
 
 document.getElementById("save-version-btn").addEventListener("click", async () => {
@@ -420,6 +436,78 @@ document.getElementById("asset-input").addEventListener("change", async (e) => {
     }
   }
   e.target.value = "";
+});
+
+// Sensible default filename per extension, matching the existing code-tab labels
+// (index.html / style.css / script.js) so a freshly created file lines up with
+// what admins already expect those extensions to be called.
+const DEFAULT_FILENAMES = { html: "index.html", css: "style.css", js: "script.js" };
+const MIME_BY_EXT = {
+  html: "text/html", htm: "text/html", css: "text/css", js: "text/javascript",
+  json: "application/json", txt: "text/plain", md: "text/markdown", svg: "image/svg+xml"
+};
+
+function mimeForExtension(ext) {
+  return MIME_BY_EXT[ext] || "text/plain";
+}
+
+document.getElementById("create-asset-btn").addEventListener("click", () => {
+  if (!currentSiteId) return;
+  const allowed = globalSettings.allowedExtensions || [];
+
+  const extFieldHtml = allowed.length
+    ? `<select id="cf-ext">${allowed.map((e) => `<option value="${escapeHtml(e)}">.${escapeHtml(e)}</option>`).join("")}</select>`
+    : `<input type="text" id="cf-ext" value="html" placeholder="e.g. html">`;
+
+  const overlay = openModal(`
+    <h3>Create file</h3>
+    <label>Extension</label>
+    ${extFieldHtml}
+    <label>Filename</label>
+    <input type="text" id="cf-name" value="${escapeHtml(DEFAULT_FILENAMES.html)}">
+    <div class="modal-actions">
+      <button class="ghost" id="cf-cancel">Cancel</button>
+      <button class="primary" style="width:auto;" id="cf-create">Create</button>
+    </div>
+  `);
+  const extField = overlay.querySelector("#cf-ext");
+  const nameField = overlay.querySelector("#cf-name");
+
+  // Keep the filename in step with the chosen extension until the admin edits
+  // it themselves — mirrors how index.html/style.css/script.js already read.
+  let nameTouchedByUser = false;
+  nameField.addEventListener("input", () => { nameTouchedByUser = true; });
+  const applyDefaultName = () => {
+    if (nameTouchedByUser) return;
+    const ext = normalizeExtension(extField.value);
+    nameField.value = DEFAULT_FILENAMES[ext] || (ext ? `untitled.${ext}` : "untitled");
+  };
+  extField.addEventListener("change", applyDefaultName);
+  extField.addEventListener("input", applyDefaultName);
+
+  overlay.querySelector("#cf-cancel").addEventListener("click", () => overlay.remove());
+  overlay.querySelector("#cf-create").addEventListener("click", async () => {
+    const ext = normalizeExtension(extField.value);
+    if (!ext) { alert("Choose a file extension."); return; }
+    if (allowed.length && !allowed.includes(ext)) {
+      alert(`".${ext}" isn't in the allowed file types. An admin can add it under Settings → Allowed file extensions.`);
+      return;
+    }
+    let name = nameField.value.trim() || (DEFAULT_FILENAMES[ext] || `untitled.${ext}`);
+    if (fileExtension(name) !== ext) name = `${name}.${ext}`; // keep name/extension in sync
+
+    const mime = mimeForExtension(ext);
+    const content = `data:${mime};base64,${btoa("")}`; // blank starter file
+    try {
+      await addDoc(collection(db, "sites", currentSiteId, "assets"), {
+        name, mime, size: 0, content, uploadedBy: currentUser.uid, createdAt: serverTimestamp()
+      });
+      await logAction("asset_created", `Created file "${name}"`, currentSiteId);
+      overlay.remove();
+    } catch (err) {
+      alert(`Could not create "${name}": ${err.message}`);
+    }
+  });
 });
 
 document.getElementById("screenshot-btn").addEventListener("click", () => document.getElementById("screenshot-input").click());

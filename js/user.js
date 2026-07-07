@@ -75,14 +75,23 @@ function requireActive(actionLabel) {
   return false;
 }
 
-function openModal(html) {
+// `dismissable: false` drops the backdrop-click-to-close listener, so the overlay
+// can only go away via code (e.g. status becoming active again) — used for the
+// status lockout below, which must not have a click-outside escape hatch.
+function openModal(html, { dismissable = true } = {}) {
   const overlay = document.createElement("div");
   overlay.className = "modal-overlay";
   overlay.innerHTML = `<div class="modal-box">${html}</div>`;
   document.body.appendChild(overlay);
-  overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
+  if (dismissable) {
+    overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
+  }
   return overlay;
 }
+
+// Tracks the currently-open non-dismissable status lockout overlay (if any), so
+// we never stack duplicates and can remove it the moment status flips back to active.
+let statusLockOverlay = null;
 
 // Small pill next to "Sign out" showing account status. Clicking it opens a modal —
 // for an active account, just a confirmation; for anything else, the appeal form.
@@ -95,6 +104,21 @@ function renderStatusBanner() {
   pill.textContent = isOk ? "Active" : (status || "unknown");
   pill.className = "status-pill " + (isOk ? "ok" : "blocked");
   pill.onclick = () => (isOk ? openActiveStatusModal() : openAppealModal(status));
+
+  syncStatusLock(status, isOk);
+}
+
+// Whenever status isn't "active", the appeal modal must always be showing — on
+// initial load and immediately on any live status change — and it can't be
+// dismissed by clicking the backdrop. Once status becomes active again, the
+// lockout overlay is removed automatically.
+function syncStatusLock(status, isOk) {
+  if (isOk) {
+    if (statusLockOverlay) { statusLockOverlay.remove(); statusLockOverlay = null; }
+    return;
+  }
+  if (statusLockOverlay) return; // already showing
+  statusLockOverlay = openAppealModal(status, { lockout: true });
 }
 
 function openActiveStatusModal() {
@@ -110,73 +134,93 @@ function openActiveStatusModal() {
    Status appeal — lets a suspended/blocked/disabled user ask
    an admin to re-review their account, instead of just being
    locked out with no path forward.
+
+   `lockout: true` (used by syncStatusLock) makes this a true lockout modal:
+   no backdrop-click dismiss, no Cancel/Close button — it can only go away
+   once the account's status becomes active again. The manual, non-lockout
+   path (clicking the status pill yourself) still lets you close it.
    ========================================================= */
-async function openAppealModal(status) {
+function openAppealModal(status, { lockout = false } = {}) {
   const overlay = openModal(`
     <h3>Account ${escapeHtml(status || "unknown")}</h3>
     <p style="font-size:13px;color:var(--muted);">${escapeHtml(STATUS_MESSAGES[status] || "This account is not active.")}
       Editing sites and sending messages are disabled until an admin resolves this.</p>
     <div id="appeal-body">Checking for an existing request…</div>
-  `);
+  `, { dismissable: !lockout });
   const body = overlay.querySelector("#appeal-body");
 
-  // Don't let someone spam multiple requests — check for an existing unresolved one first.
-  let existingSnap;
-  try {
-    const existingQ = query(
-      collection(db, "statusReviewRequests"),
-      where("uid", "==", currentUser.uid),
-      where("reviewed", "==", false)
-    );
-    existingSnap = await getDocs(existingQ);
-  } catch (err) {
-    body.innerHTML = `<p style="font-size:12px;color:var(--remove);">Could not check request status: ${escapeHtml(err.message)}</p>`;
-    return;
-  }
-
-  if (!existingSnap.empty) {
-    body.innerHTML = `<p style="font-size:12px;color:var(--muted);">
-      A request for review is already pending — an admin will follow up.
-    </p>
-    <div class="modal-actions"><button class="ghost" id="ap-close">Close</button></div>`;
-    body.querySelector("#ap-close").addEventListener("click", () => overlay.remove());
-    return;
-  }
-
-  body.innerHTML = `
-    <strong style="font-size:12px;">Appeal to admin</strong>
-    <p style="font-size:12px;color:var(--muted);margin:4px 0 0;">
-      Explain why you think this account should be reactivated. An admin will see this request.
-    </p>
-    <textarea id="review-request-msg" placeholder="Optional message to the admin…"></textarea>
-    <div id="review-request-status"></div>
-    <div class="modal-actions">
-      <button class="ghost" id="ap-cancel">Cancel</button>
-      <button class="primary" style="width:auto;" id="submit-review-request-btn">Submit for review</button>
-    </div>
-  `;
-  body.querySelector("#ap-cancel").addEventListener("click", () => overlay.remove());
-  body.querySelector("#submit-review-request-btn").addEventListener("click", async () => {
-    const msg = body.querySelector("#review-request-msg").value.trim();
-    const statusEl = body.querySelector("#review-request-status");
+  // Fire the async lookup/rendering in the background; the overlay itself is
+  // already attached to the DOM synchronously so callers (syncStatusLock) can
+  // hold onto it immediately.
+  (async () => {
+    // Don't let someone spam multiple requests — check for an existing unresolved one first.
+    let existingSnap;
     try {
-      await addDoc(collection(db, "statusReviewRequests"), {
-        uid: currentUser.uid,
-        name: currentUserData.name || currentUser.email,
-        email: currentUser.email,
-        statusAtRequest: status,
-        message: msg,
-        reviewed: false,
-        submittedAt: serverTimestamp()
-      });
-      statusEl.textContent = "Request submitted — an admin will review your account.";
-      statusEl.style.color = "var(--add)";
-      setTimeout(() => overlay.remove(), 1200);
+      const existingQ = query(
+        collection(db, "statusReviewRequests"),
+        where("uid", "==", currentUser.uid),
+        where("reviewed", "==", false)
+      );
+      existingSnap = await getDocs(existingQ);
     } catch (err) {
-      statusEl.textContent = "Could not submit request. Try again.";
-      statusEl.style.color = "var(--remove)";
+      body.innerHTML = `<p style="font-size:12px;color:var(--remove);">Could not check request status: ${escapeHtml(err.message)}</p>`;
+      return;
     }
-  });
+
+    const closeBtnHtml = lockout ? "" : `<button class="ghost" id="ap-close">Close</button>`;
+
+    if (!existingSnap.empty) {
+      body.innerHTML = `<p style="font-size:12px;color:var(--muted);">
+        A request for review is already pending — an admin will follow up.
+      </p>
+      <div class="modal-actions">${closeBtnHtml}</div>`;
+      const closeBtn = body.querySelector("#ap-close");
+      if (closeBtn) closeBtn.addEventListener("click", () => overlay.remove());
+      return;
+    }
+
+    const cancelBtnHtml = lockout ? "" : `<button class="ghost" id="ap-cancel">Cancel</button>`;
+    body.innerHTML = `
+      <strong style="font-size:12px;">Appeal to admin</strong>
+      <p style="font-size:12px;color:var(--muted);margin:4px 0 0;">
+        Explain why you think this account should be reactivated. An admin will see this request.
+      </p>
+      <textarea id="review-request-msg" placeholder="Optional message to the admin…"></textarea>
+      <div id="review-request-status"></div>
+      <div class="modal-actions">
+        ${cancelBtnHtml}
+        <button class="primary" style="width:auto;" id="submit-review-request-btn">Submit for review</button>
+      </div>
+    `;
+    const cancelBtn = body.querySelector("#ap-cancel");
+    if (cancelBtn) cancelBtn.addEventListener("click", () => overlay.remove());
+    body.querySelector("#submit-review-request-btn").addEventListener("click", async () => {
+      const msg = body.querySelector("#review-request-msg").value.trim();
+      const statusEl = body.querySelector("#review-request-status");
+      try {
+        await addDoc(collection(db, "statusReviewRequests"), {
+          uid: currentUser.uid,
+          name: currentUserData.name || currentUser.email,
+          email: currentUser.email,
+          statusAtRequest: status,
+          message: msg,
+          reviewed: false,
+          submittedAt: serverTimestamp()
+        });
+        statusEl.textContent = "Request submitted — an admin will review your account.";
+        statusEl.style.color = "var(--add)";
+        // Non-lockout (manually opened) modals auto-close after a submit, same as before.
+        // The lockout modal stays put — it reflects account status, not this form — and will
+        // simply show "already pending" if the pill is re-checked or the page is reloaded.
+        if (!lockout) setTimeout(() => overlay.remove(), 1200);
+      } catch (err) {
+        statusEl.textContent = "Could not submit request. Try again.";
+        statusEl.style.color = "var(--remove)";
+      }
+    });
+  })();
+
+  return overlay;
 }
 
 function init() {
@@ -236,6 +280,21 @@ const emptyState = document.getElementById("empty-state");
 const editorView = document.getElementById("editor-view");
 const codeArea = document.getElementById("code-area");
 const commitLog = document.getElementById("commit-log");
+const lineNumbersEl = document.getElementById("line-numbers");
+
+// Keeps the line-number gutter in sync with the code textarea: same line count,
+// same vertical scroll offset. Called on input, scroll, and whenever the tab
+// switch swaps codeArea.value programmatically (see setTab()).
+function syncLineNumbers() {
+  if (!lineNumbersEl) return;
+  const lineCount = codeArea.value.split("\n").length;
+  let out = "";
+  for (let i = 1; i <= lineCount; i++) out += i + "\n";
+  lineNumbersEl.textContent = out;
+  lineNumbersEl.scrollTop = codeArea.scrollTop;
+}
+codeArea.addEventListener("input", syncLineNumbers);
+codeArea.addEventListener("scroll", () => { lineNumbersEl.scrollTop = codeArea.scrollTop; });
 
 async function selectSite(siteId) {
   currentSiteId = siteId;
@@ -266,6 +325,7 @@ function setTab(lang) {
   activeTab = lang;
   document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.lang === lang));
   codeArea.value = localCode[lang];
+  syncLineNumbers();
 }
 
 document.getElementById("save-version-btn").addEventListener("click", async () => {

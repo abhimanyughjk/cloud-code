@@ -168,6 +168,27 @@ button.ghost{background:transparent;}
   border-right:1px solid var(--border);
 }
 .tab.active{color:var(--text);background:var(--surface);}
+.code-wrap{
+  flex:1;
+  display:flex;
+  min-height:0;
+  background:#0e0f16;
+  overflow:hidden;
+}
+.line-numbers{
+  flex:none;
+  min-width:38px;
+  text-align:right;
+  padding:16px 8px 16px 0;
+  font-family:'JetBrains Mono', monospace;
+  font-size:13px;
+  line-height:1.6;
+  color:#565b6b;
+  background:#0e0f16;
+  overflow:hidden;
+  white-space:pre;
+  user-select:none;
+}
 textarea.code-area{
   flex:1;
   width:100%;
@@ -180,6 +201,8 @@ textarea.code-area{
   font-size:13px;
   line-height:1.6;
   margin:0;
+  white-space:pre;
+  overflow:auto;
 }
 .editor-footer{
   padding:10px 16px;
@@ -378,8 +401,9 @@ table.data-table tr:hover td{background:var(--surface-2);}
 .asset-row .asset-size{color:var(--muted);}
 .asset-row .asset-dl{text-decoration:none;}
 .asset-row .asset-del{font-size:10px;padding:2px 6px;color:var(--remove);}
-.asset-footer{padding:10px 16px;border-top:1px solid var(--border);}
-.asset-footer #add-asset-btn{width:100%;}
+.asset-footer{padding:10px 16px;border-top:1px solid var(--border);display:flex;gap:8px;}
+.asset-footer #add-asset-btn,
+.asset-footer #create-asset-btn{flex:1;width:auto;}
 
 select{
   width:100%;background:var(--surface-2);border:1px solid var(--border);border-radius:6px;
