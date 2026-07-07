@@ -25,6 +25,8 @@ const STATUS_MESSAGES = {
   disabled: "This account has been disabled by an admin. Contact your admin for access."
 };
 
+let routeUserInFlight = false;
+
 // If already logged in, route straight to the right screen.
 onAuthStateChanged(auth, async (user) => {
   if (user) await routeUser(user);
@@ -32,8 +34,14 @@ onAuthStateChanged(auth, async (user) => {
 
 // Wraps a promise so a stuck network call (e.g. a Firestore long-poll channel that a
 // browser extension is silently swallowing) surfaces as a real error instead of hanging
-// the sign-in button forever.
+// the sign-in button forever. Also logs what the real promise does if/when it eventually
+// settles on its own, even after the timeout has already fired, so we can tell a genuine
+// hang apart from a merely-slow response.
 function withTimeout(promise, ms, label) {
+  promise.then(
+    (v) => console.log(`[diag] ${label} resolved on its own`, v),
+    (e) => console.log(`[diag] ${label} rejected on its own:`, e)
+  );
   return Promise.race([
     promise,
     new Promise((_, reject) =>
@@ -43,6 +51,19 @@ function withTimeout(promise, ms, label) {
 }
 
 async function routeUser(user) {
+  if (routeUserInFlight) {
+    console.log("[diag] routeUser already running, skipping duplicate call");
+    return;
+  }
+  routeUserInFlight = true;
+  try {
+    await routeUserImpl(user);
+  } finally {
+    routeUserInFlight = false;
+  }
+}
+
+async function routeUserImpl(user) {
   // Admin allowlist still lives in Firestore (see firestore.rules) — checked first so
   // admins are never blocked out by their own users/{uid} status record (they don't have one).
   const adminSnap = await withTimeout(
