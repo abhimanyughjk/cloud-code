@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cloud-Code · Admin</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+  <div class="topnav">
+    <div class="logo">CLOUD<span class="dot">-</span>CODE <span style="color:var(--muted);font-weight:400;">/ admin</span></div>
+    <div class="section-tabs">
+      <div class="section-tab active" data-section="sites">Sites</div>
+      <div class="section-tab" data-section="users">Users</div>
+      <div class="section-tab" data-section="logs">Logs</div>
+      <div class="section-tab" data-section="chat">Chat</div>
+    </div>
+    <button id="logout-btn" class="ghost">Sign out</button>
+  </div>
+
+  <div class="app-body">
+
+    <!-- ===== SITES ===== -->
+    <div class="section-view active" id="section-sites">
+      <aside class="sidebar">
+        <div class="site-list" id="site-list"></div>
+        <div class="sidebar-footer">
+          <button class="new-site-btn primary" id="new-site-btn">+ New site</button>
+        </div>
+      </aside>
+      <main class="main">
+        <div id="empty-state" class="empty-state">Select or create a site to start editing.</div>
+        <div id="editor-view" style="display:none; flex:1; flex-direction:column; min-height:0;">
+          <div class="topbar">
+            <div>
+              <h2 id="site-name">—</h2>
+              <span class="repo-link" id="site-repo"></span>
+            </div>
+            <div class="topbar-actions">
+              <button id="assign-users-btn">Assign users</button>
+              <button id="copy-loader-btn">Copy loader snippet</button>
+              <button id="delete-site-btn" class="danger">Delete site</button>
+            </div>
+          </div>
+          <div class="workspace">
+            <div class="editor-col">
+              <div class="tabs">
+                <div class="tab active" data-lang="html">index.html</div>
+                <div class="tab" data-lang="css">style.css</div>
+                <div class="tab" data-lang="js">script.js</div>
+              </div>
+              <textarea class="code-area" id="code-area" spellcheck="false"></textarea>
+              <div class="editor-footer">
+                <input type="text" id="commit-msg" placeholder="What changed?">
+                <button id="save-version-btn" class="primary" style="width:auto;">Save</button>
+              </div>
+            </div>
+            <div class="history-col">
+              <h3>VERSION HISTORY</h3>
+              <div class="commit-log" id="commit-log"></div>
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <!-- ===== USERS ===== -->
+    <div class="section-view" id="section-users">
+      <div style="flex:1;display:flex;flex-direction:column;min-height:0;">
+        <div class="section-toolbar">
+          <strong style="font-size:13px;">All users</strong>
+          <button id="new-user-btn" class="primary" style="width:auto;">+ New user</button>
+        </div>
+        <div class="panel-pad">
+          <table class="data-table">
+            <thead><tr><th>Name</th><th>Email</th><th>Status</th><th>Assigned sites</th><th>Actions</th></tr></thead>
+            <tbody id="users-table-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== LOGS ===== -->
+    <div class="section-view" id="section-logs">
+      <div style="flex:1;display:flex;flex-direction:column;min-height:0;">
+        <div class="section-toolbar"><strong style="font-size:13px;">Action log</strong></div>
+        <div class="panel-pad">
+          <table class="data-table">
+            <thead><tr><th>When</th><th>Action</th><th>By</th><th>Detail</th></tr></thead>
+            <tbody id="logs-table-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== CHAT ===== -->
+    <div class="section-view" id="section-chat">
+      <div class="chat-layout" style="flex:1;">
+        <div class="chat-threads" id="chat-threads">
+          <div class="section-toolbar" style="border-bottom:1px solid var(--border);">
+            <strong style="font-size:12px;">Threads</strong>
+            <button id="new-group-btn" style="width:auto;font-size:11px;">+ Group</button>
+          </div>
+          <div id="thread-list"></div>
+          <div style="padding:14px;border-top:1px solid var(--border);">
+            <strong style="font-size:11px;color:var(--muted);">Pending chat requests</strong>
+            <div id="chat-requests"></div>
+          </div>
+        </div>
+        <div class="chat-main">
+          <div id="chat-empty" class="empty-state">Pick a user or group to chat with.</div>
+          <div id="chat-thread" style="display:none;flex:1;flex-direction:column;min-height:0;">
+            <div class="topbar"><h2 id="chat-title">—</h2></div>
+            <div class="chat-messages" id="chat-messages"></div>
+            <div class="chat-input">
+              <input type="text" id="chat-input-box" placeholder="Type a message…">
+              <button id="chat-send-btn" class="primary">Send</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <script type="module" src="js/admin.js"></script>
+</body>
+</html>
