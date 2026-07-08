@@ -42,8 +42,10 @@ let currentUser = null;
 let currentSiteId = null;
 let currentSiteData = null;
 let currentVersionDoc = null; // the editable "latest" version
-let activeTab = "html";
-let localCode = { html: "", css: "", js: "" };
+let activeTab = null;      // active filename, e.g. "index.html"
+let localFiles = {};       // filename -> content, staged in the editor until Save
+let fileOrder = [];        // filenames, in tab order (also the loader's apply order)
+let entryFile = "index.html"; // which file the loader renders as the page body
 let usersCache = {}; // uid -> user doc data
 let sitesCache = {}; // siteId -> site doc data (kept live by listenToSites)
 let currentThread = null; // { type:'user'|'group', id }
@@ -142,14 +144,21 @@ document.getElementById("new-site-btn").addEventListener("click", async () => {
   if (!name) return;
   const repo = prompt("GitHub repo URL (optional):") || "";
 
+  const starterFiles = { "index.html": "", "style.css": "", "script.js": "" };
+  const starterOrder = ["index.html", "style.css", "script.js"];
+
   const siteRef = await addDoc(collection(db, "sites"), {
-    name, repo, html: "", css: "", js: "",
+    name, repo,
+    files: starterFiles, fileOrder: starterOrder, entryFile: "index.html",
+    // Legacy mirror so anything still reading the old 3-field schema keeps working.
+    html: "", css: "", js: "",
     assignedUsers: [], latestVersionId: "1.0", liveVersionId: "1.0",
     createdBy: currentUser.uid, updatedAt: serverTimestamp()
   });
 
   await setDoc(doc(db, "sites", siteRef.id, "versions", "1.0"), {
     major: 1, minor: 0, editCount: 0, locked: false,
+    files: starterFiles, fileOrder: starterOrder, entryFile: "index.html",
     html: "", css: "", js: "",
     author: { uid: currentUser.uid, name: currentUser.email, role: "admin" },
     message: "Initial version", createdAt: serverTimestamp(), updatedAt: serverTimestamp()
@@ -179,6 +188,31 @@ function syncLineNumbers() {
 codeArea.addEventListener("input", syncLineNumbers);
 codeArea.addEventListener("scroll", () => { lineNumbersEl.scrollTop = codeArea.scrollTop; });
 
+// Extensions the editor treats as "code" — text you write in the tabbed
+// editor and that gets versioned + served by the loader. Anything else
+// (images, fonts, etc.) stays in the separate Site Assets panel below.
+const EDITABLE_EXTENSIONS = ["html", "htm", "css", "js", "mjs", "json", "svg", "txt", "md", "xml"];
+function isEditableExtension(name) { return EDITABLE_EXTENSIONS.includes(fileExtension(name)); }
+
+// Turns a version doc (new files/fileOrder/entryFile schema, OR the old fixed
+// html/css/js schema from before multi-file support existed) into the shape
+// the editor works with in memory. Old sites keep working untouched; the
+// first Save after opening one writes it forward in the new schema.
+function filesFromVersionDoc(v) {
+  if (v && v.files && Object.keys(v.files).length) {
+    const files = { ...v.files };
+    let order = Array.isArray(v.fileOrder) ? v.fileOrder.filter((n) => files[n] !== undefined) : [];
+    Object.keys(files).forEach((n) => { if (!order.includes(n)) order.push(n); });
+    if (!order.length) order = Object.keys(files);
+    const entry = v.entryFile && files[v.entryFile] !== undefined
+      ? v.entryFile
+      : (files["index.html"] !== undefined ? "index.html" : order.find((n) => /\.html?$/i.test(n)) || order[0]);
+    return { files, order, entryFile: entry };
+  }
+  const files = { "index.html": v?.html || "", "style.css": v?.css || "", "script.js": v?.js || "" };
+  return { files, order: ["index.html", "style.css", "script.js"], entryFile: "index.html" };
+}
+
 async function selectSite(siteId) {
   currentSiteId = siteId;
   const snap = await getDoc(doc(db, "sites", siteId));
@@ -186,8 +220,11 @@ async function selectSite(siteId) {
   currentSiteData = snap.data();
 
   const vSnap = await getDoc(doc(db, "sites", siteId, "versions", currentSiteData.latestVersionId));
-  currentVersionDoc = vSnap.exists() ? vSnap.data() : { html: "", css: "", js: "", editCount: 0 };
-  localCode = { html: currentVersionDoc.html || "", css: currentVersionDoc.css || "", js: currentVersionDoc.js || "" };
+  currentVersionDoc = vSnap.exists() ? vSnap.data() : { editCount: 0 };
+  const migrated = filesFromVersionDoc(currentVersionDoc);
+  localFiles = migrated.files;
+  fileOrder = migrated.order;
+  entryFile = migrated.entryFile;
 
   document.getElementById("site-name").textContent = currentSiteData.name;
   document.getElementById("site-repo").textContent =
@@ -197,40 +234,239 @@ async function selectSite(siteId) {
   emptyState.style.display = "none";
   editorView.style.display = "flex";
   document.getElementById("sites-sidebar").classList.add("collapsed");
-  setTab("html");
+  renderTabs();
+  setTab(fileOrder[0]);
   loadHistory(siteId);
   renderScreenshotPreview(currentSiteData.screenshot || null);
   listenAssets(siteId);
 }
 
-document.querySelectorAll(".tab").forEach((tabEl) => {
-  tabEl.addEventListener("click", () => setTab(tabEl.dataset.lang));
-});
-function setTab(lang) {
-  localCode[activeTab] = codeArea.value;
-  activeTab = lang;
-  document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.lang === lang));
-  codeArea.value = localCode[lang];
+const tabsEl = document.querySelector(".tabs");
+
+// Renders the tab strip from fileOrder/localFiles. Each tab: click to switch,
+// ✕ to delete, double-click an .html tab to make it the entry file (the one
+// the loader renders as the page — marked with a ★), drag to reorder, and a
+// trailing "+" to add a new file. Also accepts a drop from the Site Assets
+// list to promote an existing asset into an editable tab (see wireAssetDrag()).
+function renderTabs() {
+  if (!tabsEl) return;
+  tabsEl.innerHTML = "";
+  fileOrder.forEach((name) => {
+    const tabEl = document.createElement("div");
+    tabEl.className = "tab" + (name === activeTab ? " active" : "");
+    tabEl.draggable = true;
+    tabEl.dataset.name = name;
+    const star = name === entryFile
+      ? '<span class="tab-entry-badge" title="Entry file — this is what the loader renders as the page">★</span>'
+      : "";
+    tabEl.innerHTML = `<span class="tab-name">${escapeHtml(name)}${star}</span><button class="tab-close" title="Delete file">✕</button>`;
+    tabEl.addEventListener("click", (e) => {
+      if (e.target.closest(".tab-close")) return;
+      setTab(name);
+    });
+    tabEl.querySelector(".tab-close").addEventListener("click", (e) => {
+      e.stopPropagation();
+      deleteFile(name);
+    });
+    if (/\.html?$/i.test(name)) {
+      tabEl.addEventListener("dblclick", () => { entryFile = name; renderTabs(); });
+    }
+    wireTabDragReorder(tabEl, name);
+    tabsEl.appendChild(tabEl);
+  });
+
+  const addBtn = document.createElement("button");
+  addBtn.type = "button";
+  addBtn.className = "tab-add";
+  addBtn.title = "New file";
+  addBtn.textContent = "+";
+  addBtn.addEventListener("click", () => promptNewFile());
+  tabsEl.appendChild(addBtn);
+
+  wireAssetDropTarget();
+}
+
+function setTab(name) {
+  if (activeTab) localFiles[activeTab] = codeArea.value;
+  activeTab = name;
+  codeArea.value = localFiles[name] || "";
+  tabsEl?.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.name === name));
   syncLineNumbers();
+}
+
+function promptNewFile() {
+  if (!currentSiteId) return;
+  const allowed = globalSettings.allowedExtensions || [];
+  const extFieldHtml = allowed.length
+    ? `<select id="nf-ext">${allowed.filter(isEditableExtension).map((e) => `<option value="${escapeHtml(e)}">.${escapeHtml(e)}</option>`).join("")}</select>`
+    : `<input type="text" id="nf-ext" value="html" placeholder="e.g. html">`;
+  const overlay = openModal(`
+    <h3>New file</h3>
+    <label>Extension</label>
+    ${extFieldHtml}
+    <label>Filename</label>
+    <input type="text" id="nf-name" value="untitled.html">
+    <div class="modal-actions">
+      <button class="ghost" id="nf-cancel">Cancel</button>
+      <button class="primary" style="width:auto;" id="nf-create">Create</button>
+    </div>
+  `);
+  const extField = overlay.querySelector("#nf-ext");
+  const nameField = overlay.querySelector("#nf-name");
+  let nameTouched = false;
+  nameField.addEventListener("input", () => { nameTouched = true; });
+  const applyDefaultName = () => {
+    if (nameTouched) return;
+    const ext = normalizeExtension(extField.value);
+    nameField.value = DEFAULT_FILENAMES[ext] || (ext ? `untitled.${ext}` : "untitled");
+  };
+  extField.addEventListener("change", applyDefaultName);
+  extField.addEventListener("input", applyDefaultName);
+  applyDefaultName();
+
+  overlay.querySelector("#nf-cancel").addEventListener("click", () => overlay.remove());
+  overlay.querySelector("#nf-create").addEventListener("click", () => {
+    const ext = normalizeExtension(extField.value);
+    if (!ext) { alert("Choose a file extension."); return; }
+    if (allowed.length && !allowed.includes(ext)) {
+      alert(`".${ext}" isn't in the allowed file types. An admin can add it under Settings → Allowed file extensions.`);
+      return;
+    }
+    let name = nameField.value.trim() || (DEFAULT_FILENAMES[ext] || `untitled.${ext}`);
+    if (fileExtension(name) !== ext) name = `${name}.${ext}`;
+    if (localFiles[name] !== undefined) { alert(`"${name}" already exists.`); return; }
+
+    if (activeTab) localFiles[activeTab] = codeArea.value;
+    localFiles[name] = "";
+    fileOrder.push(name);
+    if (!Object.keys(localFiles).some((n) => n !== name && /\.html?$/i.test(n))) {
+      // First html file in the project — make it the entry automatically.
+      if (/\.html?$/i.test(name) && !fileOrder.some((n) => n !== name && n === entryFile)) entryFile = name;
+    }
+    renderTabs();
+    setTab(name);
+    overlay.remove();
+  });
+}
+
+function deleteFile(name) {
+  if (fileOrder.length <= 1) { alert("A site needs at least one file."); return; }
+  if (!confirm(`Delete "${name}"? This only takes effect once you click Save.`)) return;
+  delete localFiles[name];
+  fileOrder = fileOrder.filter((n) => n !== name);
+  if (entryFile === name) entryFile = fileOrder.find((n) => /\.html?$/i.test(n)) || fileOrder[0];
+  if (activeTab === name) activeTab = null;
+  renderTabs();
+  setTab(fileOrder.includes(activeTab) ? activeTab : fileOrder[0]);
+}
+
+// ---- Drag-to-reorder tabs, and drag-to-promote an asset into a tab ----------
+let draggedTabName = null;
+
+function wireTabDragReorder(tabEl, name) {
+  tabEl.addEventListener("dragstart", (e) => {
+    draggedTabName = name;
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/cloud-code-tab", name);
+  });
+  tabEl.addEventListener("dragover", (e) => {
+    e.preventDefault();
+    tabEl.classList.add("drag-over");
+  });
+  tabEl.addEventListener("dragleave", () => tabEl.classList.remove("drag-over"));
+  tabEl.addEventListener("drop", (e) => {
+    e.preventDefault();
+    tabEl.classList.remove("drag-over");
+    if (!draggedTabName || draggedTabName === name) return;
+    const from = fileOrder.indexOf(draggedTabName);
+    const to = fileOrder.indexOf(name);
+    if (from === -1 || to === -1) return;
+    fileOrder.splice(from, 1);
+    fileOrder.splice(to, 0, draggedTabName);
+    draggedTabName = null;
+    renderTabs();
+  });
+}
+
+// Lets an asset row from the Site Assets panel be dropped onto the tab strip
+// to promote it: its content moves out of the assets subcollection and into
+// this editable files map (becoming a real tab), taking effect on next Save.
+function wireAssetDropTarget() {
+  if (!tabsEl) return;
+  tabsEl.addEventListener("dragover", (e) => {
+    if (!e.dataTransfer.types.includes("text/cloud-code-asset")) return;
+    e.preventDefault();
+    tabsEl.classList.add("drag-over");
+  });
+  tabsEl.addEventListener("dragleave", (e) => {
+    if (e.target === tabsEl) tabsEl.classList.remove("drag-over");
+  });
+  tabsEl.addEventListener("drop", async (e) => {
+    if (!e.dataTransfer.types.includes("text/cloud-code-asset")) return;
+    e.preventDefault();
+    tabsEl.classList.remove("drag-over");
+    const assetId = e.dataTransfer.getData("text/cloud-code-asset");
+    await promoteAssetToFile(assetId);
+  });
+}
+
+async function promoteAssetToFile(assetId) {
+  if (!currentSiteId || !assetId) return;
+  const assetSnap = await getDoc(doc(db, "sites", currentSiteId, "assets", assetId));
+  if (!assetSnap.exists()) return;
+  const a = assetSnap.data();
+  if (!isEditableExtension(a.name)) {
+    alert(`"${a.name}" isn't a code file type, so it can't become an editable tab.`);
+    return;
+  }
+  let text = "";
+  try {
+    const base64 = String(a.content || "").split(",")[1] || "";
+    text = decodeURIComponent(escape(atob(base64)));
+  } catch (err) {
+    alert(`Could not read "${a.name}" as text: ${err.message}`);
+    return;
+  }
+  let name = a.name;
+  if (localFiles[name] !== undefined) {
+    if (!confirm(`"${name}" is already an open tab. Overwrite it with this file's content?`)) return;
+  }
+  if (activeTab) localFiles[activeTab] = codeArea.value;
+  localFiles[name] = text;
+  if (!fileOrder.includes(name)) fileOrder.push(name);
+  await deleteDoc(doc(db, "sites", currentSiteId, "assets", assetId));
+  await logAction("asset_promoted", `Promoted asset "${name}" into the editable files`, currentSiteId);
+  renderTabs();
+  setTab(name);
 }
 
 document.getElementById("save-version-btn").addEventListener("click", async () => {
   if (!currentSiteId) return;
-  localCode[activeTab] = codeArea.value;
+  if (activeTab) localFiles[activeTab] = codeArea.value;
   const msg = document.getElementById("commit-msg").value.trim() || "Update";
   const author = { uid: currentUser.uid, name: currentUser.email, role: "admin" };
   const versionId = currentSiteData.latestVersionId;
   const newEditCount = (currentVersionDoc.editCount || 0) + 1;
 
+  const filesPayload = { ...localFiles };
+  const orderPayload = [...fileOrder];
+  // Legacy mirror fields, kept in sync for anything still reading the old
+  // 3-field schema directly (e.g. a not-yet-updated loader embed).
+  const legacyMirror = {
+    html: filesPayload[entryFile] || "",
+    css: orderPayload.filter((n) => n !== entryFile && fileExtension(n) === "css").map((n) => filesPayload[n]).join("\n"),
+    js: orderPayload.filter((n) => n !== entryFile && fileExtension(n) === "js").map((n) => filesPayload[n]).join("\n"),
+  };
+
   // Update the editable head version in place.
   await updateDoc(doc(db, "sites", currentSiteId, "versions", versionId), {
-    html: localCode.html, css: localCode.css, js: localCode.js,
+    files: filesPayload, fileOrder: orderPayload, entryFile, ...legacyMirror,
     editCount: newEditCount, author, message: msg, updatedAt: serverTimestamp()
   });
 
   // Auto-publish: live site always serves whatever was just saved to latest.
   await updateDoc(doc(db, "sites", currentSiteId), {
-    html: localCode.html, css: localCode.css, js: localCode.js,
+    files: filesPayload, fileOrder: orderPayload, entryFile, ...legacyMirror,
     liveVersionId: versionId, updatedAt: serverTimestamp()
   });
 
@@ -243,7 +479,7 @@ document.getElementById("save-version-btn").addEventListener("click", async () =
     const nextVersionId = `${maj + 1}.0`;
     await setDoc(doc(db, "sites", currentSiteId, "versions", nextVersionId), {
       major: maj + 1, minor: 0, editCount: 0, locked: false,
-      html: localCode.html, css: localCode.css, js: localCode.js,
+      files: filesPayload, fileOrder: orderPayload, entryFile, ...legacyMirror,
       author, message: "Auto-created after edit limit", createdAt: serverTimestamp(), updatedAt: serverTimestamp()
     });
     await updateDoc(doc(db, "sites", currentSiteId), { latestVersionId: nextVersionId });
@@ -283,10 +519,17 @@ async function rollback(versionId) {
   const vSnap = await getDoc(doc(db, "sites", currentSiteId, "versions", versionId));
   if (!vSnap.exists()) return;
   const v = vSnap.data();
+  const migrated = filesFromVersionDoc(v);
+  const legacyMirror = {
+    html: migrated.files[migrated.entryFile] || "",
+    css: migrated.order.filter((n) => n !== migrated.entryFile && fileExtension(n) === "css").map((n) => migrated.files[n]).join("\n"),
+    js: migrated.order.filter((n) => n !== migrated.entryFile && fileExtension(n) === "js").map((n) => migrated.files[n]).join("\n"),
+  };
   // Restoring only changes what's LIVE. It never edits the old version doc,
   // and never touches the latest editable head.
   await updateDoc(doc(db, "sites", currentSiteId), {
-    html: v.html, css: v.css, js: v.js, liveVersionId: versionId, updatedAt: serverTimestamp()
+    files: migrated.files, fileOrder: migrated.order, entryFile: migrated.entryFile, ...legacyMirror,
+    liveVersionId: versionId, updatedAt: serverTimestamp()
   });
   await logAction("version_restored", `Restored v${versionId} live on "${currentSiteData.name}"`, currentSiteId);
   selectSite(currentSiteId);
@@ -377,13 +620,22 @@ function listenAssets(siteId) {
     snap.forEach((d) => {
       const a = d.data();
       const kb = a.size ? Math.max(1, Math.round(a.size / 1024)) : 0;
+      const editable = isEditableExtension(a.name);
       const row = document.createElement("div");
       row.className = "asset-row";
+      row.draggable = editable;
+      if (editable) row.title = "Drag onto a code tab to make this an editable file";
       row.innerHTML = `
         <span class="asset-name" title="${escapeHtml(a.mime || "")}">${escapeHtml(a.name)}</span>
         <span class="asset-size">${kb}KB</span>
         <a class="asset-dl" href="${a.content}" download="${escapeHtml(a.name)}" title="Download">↓</a>
         <button class="asset-del" data-id="${d.id}" title="Delete">✕</button>`;
+      if (editable) {
+        row.addEventListener("dragstart", (e) => {
+          e.dataTransfer.effectAllowed = "move";
+          e.dataTransfer.setData("text/cloud-code-asset", d.id);
+        });
+      }
       list.appendChild(row);
     });
     list.querySelectorAll(".asset-del").forEach((btn) => {
@@ -422,6 +674,21 @@ document.getElementById("asset-input").addEventListener("change", async (e) => {
     }
     if (file.size > MAX_ASSET_BYTES) {
       alert(`"${file.name}" is too large (${Math.round(file.size / 1024)}KB). Keep files under ~${Math.round(MAX_ASSET_BYTES / 1024)}KB.`);
+      continue;
+    }
+    if (isEditableExtension(file.name)) {
+      try {
+        const text = await file.text();
+        if (localFiles[file.name] !== undefined && !confirm(`"${file.name}" is already an open tab. Overwrite it?`)) continue;
+        if (activeTab) localFiles[activeTab] = codeArea.value;
+        localFiles[file.name] = text;
+        if (!fileOrder.includes(file.name)) fileOrder.push(file.name);
+        renderTabs();
+        setTab(file.name);
+        await logAction("file_uploaded", `Uploaded "${file.name}" as an editable file (not yet saved)`, currentSiteId);
+      } catch (err) {
+        alert(`Could not read "${file.name}": ${err.message}`);
+      }
       continue;
     }
     try {
@@ -495,6 +762,17 @@ document.getElementById("create-asset-btn").addEventListener("click", () => {
     }
     let name = nameField.value.trim() || (DEFAULT_FILENAMES[ext] || `untitled.${ext}`);
     if (fileExtension(name) !== ext) name = `${name}.${ext}`; // keep name/extension in sync
+
+    if (isEditableExtension(name)) {
+      if (localFiles[name] !== undefined) { alert(`"${name}" already exists.`); return; }
+      if (activeTab) localFiles[activeTab] = codeArea.value;
+      localFiles[name] = "";
+      fileOrder.push(name);
+      renderTabs();
+      setTab(name);
+      overlay.remove();
+      return;
+    }
 
     const mime = mimeForExtension(ext);
     const content = `data:${mime};base64,${btoa("")}`; // blank starter file

@@ -8,9 +8,16 @@
 //   data-loader-cache   set to "false" to disable the localStorage cache (default: on)
 //
 // It fetches the site's currently published version from Firestore (public read-only)
-// and injects the HTML/CSS/JS into the page. No auth, no write access.
+// and injects it into the page. No auth, no write access.
 //
-// Improvements over the original:
+// Supports any number of editable files (not just a fixed html/css/js trio):
+// the site doc's `files` map holds every file, `fileOrder` controls apply
+// order, and `entryFile` marks which one is rendered as the page body. Every
+// other .css file becomes a <style>, every other .js file executes, in order.
+// Sites saved before multi-file support existed (plain html/css/js fields)
+// are still read correctly via an automatic fallback.
+//
+// Other improvements over the original:
 //  - Visible loading indicator instead of a blank page while the fetch is in flight.
 //  - Instant repaint from a cached copy on repeat visits, refreshed in the background.
 //  - Timeout + friendly on-page error message (in addition to console logging).
@@ -120,36 +127,81 @@
     }
   }
 
+  function extOf(name) {
+    const m = /\.([a-z0-9]+)$/i.exec(name || "");
+    return m ? m[1].toLowerCase() : "";
+  }
+
   // ---- Render ---------------------------------------------------------------
-  function render({ html, css, js }) {
-    if (html) {
+  // `files` is a filename -> content map (any number of files, not just a fixed
+  // html/css/js trio). `order` controls the sequence css/js files are applied
+  // in, which matters when one script depends on another. `entryFile` is the
+  // one file rendered as the actual page body; every other .css file becomes a
+  // <style>, every other .js file gets executed, in order — the same "always
+  // applied" behavior the old fixed css/js fields had, just generalized to N
+  // files. Anything else (e.g. a .json or .svg file) is stored/versioned but
+  // not auto-injected; it's only useful if something else reads it by name,
+  // which isn't supported by this loader.
+  function render({ files, order, entryFile }) {
+    const names = order && order.length ? order : Object.keys(files || {});
+    if (!names.length) return removeLoader();
+
+    const entryHtml = entryFile && files[entryFile] != null ? files[entryFile] : "";
+    if (entryHtml) {
       const container = document.createElement("div");
       container.id = "cloud-code-root";
-      container.innerHTML = extractBodyContent(html);
+      container.innerHTML = extractBodyContent(entryHtml);
       document.body.appendChild(container);
       requestAnimationFrame(() => container.classList.add("cc-visible"));
     }
-    if (css) {
-      const styleEl = document.createElement("style");
-      styleEl.textContent = css;
-      document.head.appendChild(styleEl);
-    }
-    if (js) {
-      const scriptEl = document.createElement("script");
-      scriptEl.textContent = js;
-      document.body.appendChild(scriptEl);
-    }
+
+    names.forEach((name) => {
+      if (name === entryFile) return;
+      const ext = extOf(name);
+      if (ext === "css") {
+        const styleEl = document.createElement("style");
+        styleEl.textContent = files[name];
+        document.head.appendChild(styleEl);
+      } else if (ext === "js" || ext === "mjs") {
+        const scriptEl = document.createElement("script");
+        scriptEl.textContent = files[name];
+        document.body.appendChild(scriptEl);
+      }
+    });
+
     removeLoader();
   }
 
   function parseDoc(doc) {
     const fields = doc.fields || {};
-    return {
-      html: fields.html?.stringValue || "",
-      css: fields.css?.stringValue || "",
-      js: fields.js?.stringValue || "",
-      versionId: fields.liveVersionId?.stringValue || "",
-    };
+    const filesField = fields.files && fields.files.mapValue && fields.files.mapValue.fields;
+
+    let files = {};
+    let order = [];
+
+    if (filesField) {
+      Object.keys(filesField).forEach((name) => {
+        files[name] = filesField[name].stringValue || "";
+      });
+      const orderField = fields.fileOrder && fields.fileOrder.arrayValue && fields.fileOrder.arrayValue.values;
+      order = orderField
+        ? orderField.map((v) => v.stringValue).filter((n) => files[n] !== undefined)
+        : [];
+      Object.keys(files).forEach((n) => { if (!order.includes(n)) order.push(n); });
+    } else {
+      // Legacy 3-field schema, from before multi-file support existed.
+      if (fields.html?.stringValue) files["index.html"] = fields.html.stringValue;
+      if (fields.css?.stringValue) files["style.css"] = fields.css.stringValue;
+      if (fields.js?.stringValue) files["script.js"] = fields.js.stringValue;
+      order = Object.keys(files);
+    }
+
+    const entryFile =
+      (fields.entryFile && fields.entryFile.stringValue && files[fields.entryFile.stringValue] !== undefined && fields.entryFile.stringValue) ||
+      (files["index.html"] !== undefined ? "index.html" : order.find((n) => /\.html?$/i.test(n))) ||
+      null;
+
+    return { files, order, entryFile, versionId: fields.liveVersionId?.stringValue || "" };
   }
 
   function readCache() {
@@ -187,7 +239,7 @@
     })
     .then((doc) => {
       const data = parseDoc(doc);
-      if (!data.html && !data.css && !data.js) {
+      if (!Object.keys(data.files).length) {
         throw new Error("Site has no published content yet");
       }
 

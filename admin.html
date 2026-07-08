@@ -51,11 +51,7 @@
           </div>
           <div class="workspace">
             <div class="editor-col">
-              <div class="tabs">
-                <div class="tab active" data-lang="html">index.html</div>
-                <div class="tab" data-lang="css">style.css</div>
-                <div class="tab" data-lang="js">script.js</div>
-              </div>
+              <div class="tabs" id="editor-tabs"></div>
               <div class="code-wrap">
                 <div class="line-numbers" id="line-numbers">1</div>
                 <textarea class="code-area" id="code-area" spellcheck="false" wrap="off"></textarea>
@@ -77,6 +73,7 @@
               </div>
               <input type="file" id="screenshot-input" accept="image/*" style="display:none;">
               <button id="screenshot-btn">Upload screenshot</button>
+              <p class="asset-hint">Drag an html/css/js file onto a tab above to make it editable.</p>
               <div class="asset-list" id="asset-list"></div>
               <div class="asset-footer">
                 <input type="file" id="asset-input" multiple style="display:none;">
