@@ -186,6 +186,16 @@ button.ghost{background:transparent;}
   background:transparent;
 }
 .tab-close:hover{color:var(--remove);background:var(--surface-2);}
+.tab-download{
+  border:none;
+  font-size:11px;
+  line-height:1;
+  padding:2px 5px;
+  color:var(--muted);
+  border-radius:3px;
+  background:transparent;
+}
+.tab-download:hover{color:var(--text);background:var(--surface-2);}
 .tab-add{
   border:none;
   flex:none;

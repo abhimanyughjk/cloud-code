@@ -52,6 +52,7 @@ let currentThread = null; // { type:'user'|'group', id }
 let globalSettings = {}; // settings/global doc (hostingDomain, allowedExtensions, etc.)
 let unsubAssets = null;
 let pendingExtensions = []; // extensions being edited in Settings, before "Save allowed extensions"
+let assetsCache = {}; // assetId -> asset doc data, kept live by listenAssets
 
 // ---------------- Auth guard ----------------
 onAuthStateChanged(auth, async (user) => {
@@ -109,6 +110,145 @@ function escapeHtml(str) {
   div.textContent = str == null ? "" : str;
   return div.innerHTML;
 }
+
+// ---------------- Duplicate-filename conflict modal ----------------
+// Suggests "name (1).ext" / "name (2).ext" ... until existsFn(candidate) is false.
+function suggestAlternateName(name, existsFn) {
+  const ext = fileExtension(name);
+  const base = ext ? name.slice(0, -(ext.length + 1)) : name;
+  let i = 1;
+  let candidate;
+  do {
+    candidate = ext ? `${base} (${i}).${ext}` : `${base} (${i})`;
+    i++;
+  } while (existsFn(candidate));
+  return candidate;
+}
+
+// Shown whenever an uploaded or newly-created file's name collides with one
+// that already exists. Resolves to { action: "cancel" }, { action: "replace" },
+// or { action: "rename", name }. `existsFn` checks a candidate name against
+// whichever store (localFiles or assetsCache) the caller is working with.
+function promptNameConflict(name, existsFn) {
+  return new Promise((resolve) => {
+    const suggested = suggestAlternateName(name, existsFn);
+    const overlay = openModal(`
+      <h3>"${escapeHtml(name)}" already exists</h3>
+      <p style="font-size:12px;color:var(--muted);margin:0 0 12px;">Rename the new file, or replace the existing one.</p>
+      <label>New name</label>
+      <input type="text" id="conflict-name" value="${escapeHtml(suggested)}">
+      <div class="modal-actions">
+        <button class="ghost" id="conflict-cancel">Cancel</button>
+        <button class="ghost" id="conflict-rename">Rename</button>
+        <button class="primary" style="width:auto;" id="conflict-replace">Replace</button>
+      </div>
+    `);
+    const nameField = overlay.querySelector("#conflict-name");
+    const close = (result) => { overlay.remove(); resolve(result); };
+    overlay.querySelector("#conflict-cancel").addEventListener("click", () => close({ action: "cancel" }));
+    overlay.querySelector("#conflict-replace").addEventListener("click", () => close({ action: "replace" }));
+    overlay.querySelector("#conflict-rename").addEventListener("click", () => {
+      const newName = nameField.value.trim();
+      if (!newName) { alert("Enter a name."); return; }
+      if (existsFn(newName)) { alert(`"${newName}" also already exists. Choose a different name.`); return; }
+      close({ action: "rename", name: newName });
+    });
+  });
+}
+
+function assetIdByName(name) {
+  const found = Object.entries(assetsCache).find(([, a]) => a.name === name);
+  return found ? found[0] : null;
+}
+
+function assetNameExists(name) {
+  return Object.values(assetsCache).some((a) => a.name === name);
+}
+
+// ---------------- File / site downloads ----------------
+function triggerBlobDownload(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+function downloadTextFile(name, content) {
+  const ext = fileExtension(name);
+  const blob = new Blob([content], { type: (typeof mimeForExtension === "function" ? mimeForExtension(ext) : "text/plain") + ";charset=utf-8" });
+  triggerBlobDownload(blob, name);
+}
+
+function slugifyFilename(str) {
+  return (str || "site")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "") || "site";
+}
+
+async function downloadSiteZip() {
+  if (!currentSiteId || !currentSiteData) return;
+  if (typeof JSZip === "undefined") {
+    alert("Zip support failed to load. Check your connection and try again.");
+    return;
+  }
+  if (activeTab) localFiles[activeTab] = codeArea.value;
+
+  const zip = new JSZip();
+
+  const filesFolder = zip.folder("files");
+  fileOrder.forEach((name) => { filesFolder.file(name, localFiles[name] || ""); });
+
+  const assetsList = Object.values(assetsCache);
+  if (assetsList.length) {
+    const assetsFolder = zip.folder("assets");
+    assetsList.forEach((a) => {
+      const base64 = String(a.content || "").split(",")[1] || "";
+      if (base64) assetsFolder.file(a.name, base64, { base64: true });
+    });
+  }
+
+  if (currentSiteData.screenshot) {
+    const base64 = String(currentSiteData.screenshot).split(",")[1] || "";
+    if (base64) zip.file("screenshot.png", base64, { base64: true });
+  }
+
+  const assignedEmails = (currentSiteData.assignedUsers || [])
+    .map((uid) => usersCache[uid]?.email || uid);
+
+  const info = {
+    siteId: currentSiteId,
+    name: currentSiteData.name,
+    description: currentSiteData.description || null,
+    repo: currentSiteData.repo || null,
+    entryFile,
+    fileOrder,
+    assetFiles: assetsList.map((a) => a.name),
+    latestVersionId: currentSiteData.latestVersionId,
+    liveVersionId: currentSiteData.liveVersionId,
+    editCountOnLatestVersion: currentVersionDoc?.editCount || 0,
+    assignedUsers: assignedEmails,
+    hostingDomain: globalSettings.hostingDomain || null,
+    exportedAt: new Date().toISOString(),
+    exportedBy: currentUser.email
+  };
+  zip.file("site-info.json", JSON.stringify(info, null, 2));
+
+  try {
+    const blob = await zip.generateAsync({ type: "blob" });
+    triggerBlobDownload(blob, `${slugifyFilename(currentSiteData.name)}.zip`);
+    await logAction("site_downloaded", `Downloaded "${currentSiteData.name}" as a zip`, currentSiteId);
+  } catch (err) {
+    alert(`Could not build the zip: ${err.message}`);
+  }
+}
+
+document.getElementById("download-site-btn")?.addEventListener("click", () => downloadSiteZip());
 
 /* =========================================================
    SITES
@@ -259,10 +399,15 @@ function renderTabs() {
     const star = name === entryFile
       ? '<span class="tab-entry-badge" title="Entry file — this is what the loader renders as the page">★</span>'
       : "";
-    tabEl.innerHTML = `<span class="tab-name">${escapeHtml(name)}${star}</span><button class="tab-close" title="Delete file">✕</button>`;
+    tabEl.innerHTML = `<span class="tab-name">${escapeHtml(name)}${star}</span><button class="tab-download" title="Download file">⬇</button><button class="tab-close" title="Delete file">✕</button>`;
     tabEl.addEventListener("click", (e) => {
-      if (e.target.closest(".tab-close")) return;
+      if (e.target.closest(".tab-close") || e.target.closest(".tab-download")) return;
       setTab(name);
+    });
+    tabEl.querySelector(".tab-download").addEventListener("click", (e) => {
+      e.stopPropagation();
+      const content = name === activeTab ? codeArea.value : (localFiles[name] || "");
+      downloadTextFile(name, content);
     });
     tabEl.querySelector(".tab-close").addEventListener("click", (e) => {
       e.stopPropagation();
@@ -325,7 +470,7 @@ function promptNewFile() {
   applyDefaultName();
 
   overlay.querySelector("#nf-cancel").addEventListener("click", () => overlay.remove());
-  overlay.querySelector("#nf-create").addEventListener("click", () => {
+  overlay.querySelector("#nf-create").addEventListener("click", async () => {
     const ext = normalizeExtension(extField.value);
     if (!ext) { alert("Choose a file extension."); return; }
     if (allowed.length && !allowed.includes(ext)) {
@@ -334,18 +479,26 @@ function promptNewFile() {
     }
     let name = nameField.value.trim() || (DEFAULT_FILENAMES[ext] || `untitled.${ext}`);
     if (fileExtension(name) !== ext) name = `${name}.${ext}`;
-    if (localFiles[name] !== undefined) { alert(`"${name}" already exists.`); return; }
+
+    if (localFiles[name] !== undefined) {
+      overlay.remove();
+      const result = await promptNameConflict(name, (n) => localFiles[n] !== undefined);
+      if (result.action === "cancel") return;
+      if (result.action === "rename") name = result.name;
+      // "replace" keeps the same name — it's overwritten below.
+    } else {
+      overlay.remove();
+    }
 
     if (activeTab) localFiles[activeTab] = codeArea.value;
     localFiles[name] = "";
-    fileOrder.push(name);
+    if (!fileOrder.includes(name)) fileOrder.push(name);
     if (!Object.keys(localFiles).some((n) => n !== name && /\.html?$/i.test(n))) {
       // First html file in the project — make it the entry automatically.
       if (/\.html?$/i.test(name) && !fileOrder.some((n) => n !== name && n === entryFile)) entryFile = name;
     }
     renderTabs();
     setTab(name);
-    overlay.remove();
   });
 }
 
@@ -429,7 +582,10 @@ async function promoteAssetToFile(assetId) {
   }
   let name = a.name;
   if (localFiles[name] !== undefined) {
-    if (!confirm(`"${name}" is already an open tab. Overwrite it with this file's content?`)) return;
+    const result = await promptNameConflict(name, (n) => localFiles[n] !== undefined);
+    if (result.action === "cancel") return;
+    if (result.action === "rename") name = result.name;
+    // "replace" keeps the same name — the open tab is overwritten below.
   }
   if (activeTab) localFiles[activeTab] = codeArea.value;
   localFiles[name] = text;
@@ -613,8 +769,11 @@ function renderScreenshotPreview(dataUrl) {
 
 function listenAssets(siteId) {
   if (unsubAssets) unsubAssets();
+  assetsCache = {};
   const list = document.getElementById("asset-list");
   unsubAssets = onSnapshot(collection(db, "sites", siteId, "assets"), (snap) => {
+    assetsCache = {};
+    snap.forEach((d) => { assetsCache[d.id] = d.data(); });
     list.innerHTML = "";
     if (snap.empty) { list.innerHTML = '<p style="font-size:11px;color:var(--muted);">No files yet.</p>'; return; }
     snap.forEach((d) => {
@@ -679,25 +838,46 @@ document.getElementById("asset-input").addEventListener("change", async (e) => {
     if (isEditableExtension(file.name)) {
       try {
         const text = await file.text();
-        if (localFiles[file.name] !== undefined && !confirm(`"${file.name}" is already an open tab. Overwrite it?`)) continue;
+        let name = file.name;
+        if (localFiles[name] !== undefined) {
+          const result = await promptNameConflict(name, (n) => localFiles[n] !== undefined);
+          if (result.action === "cancel") continue;
+          if (result.action === "rename") name = result.name;
+          // "replace" keeps the same name — the open tab is overwritten below.
+        }
         if (activeTab) localFiles[activeTab] = codeArea.value;
-        localFiles[file.name] = text;
-        if (!fileOrder.includes(file.name)) fileOrder.push(file.name);
+        localFiles[name] = text;
+        if (!fileOrder.includes(name)) fileOrder.push(name);
         renderTabs();
-        setTab(file.name);
-        await logAction("file_uploaded", `Uploaded "${file.name}" as an editable file (not yet saved)`, currentSiteId);
+        setTab(name);
+        await logAction("file_uploaded", `Uploaded "${name}" as an editable file (not yet saved)`, currentSiteId);
       } catch (err) {
         alert(`Could not read "${file.name}": ${err.message}`);
       }
       continue;
     }
     try {
+      let name = file.name;
+      let replaceId = assetIdByName(name);
+      if (replaceId) {
+        const result = await promptNameConflict(name, (n) => assetNameExists(n));
+        if (result.action === "cancel") continue;
+        if (result.action === "rename") { name = result.name; replaceId = null; }
+        // "replace" keeps replaceId set, so the existing asset doc gets overwritten below.
+      }
       const dataUrl = await readFileAsDataUrl(file);
-      await addDoc(collection(db, "sites", currentSiteId, "assets"), {
-        name: file.name, mime: file.type || "application/octet-stream", size: file.size,
-        content: dataUrl, uploadedBy: currentUser.uid, createdAt: serverTimestamp()
-      });
-      await logAction("asset_uploaded", `Uploaded file "${file.name}"`, currentSiteId);
+      const mime = file.type || "application/octet-stream";
+      if (replaceId) {
+        await updateDoc(doc(db, "sites", currentSiteId, "assets", replaceId), {
+          mime, size: file.size, content: dataUrl, uploadedBy: currentUser.uid, updatedAt: serverTimestamp()
+        });
+        await logAction("asset_uploaded", `Replaced file "${name}"`, currentSiteId);
+      } else {
+        await addDoc(collection(db, "sites", currentSiteId, "assets"), {
+          name, mime, size: file.size, content: dataUrl, uploadedBy: currentUser.uid, createdAt: serverTimestamp()
+        });
+        await logAction("asset_uploaded", `Uploaded file "${name}"`, currentSiteId);
+      }
     } catch (err) {
       alert(`Could not upload "${file.name}": ${err.message}`);
     }
@@ -764,24 +944,48 @@ document.getElementById("create-asset-btn").addEventListener("click", () => {
     if (fileExtension(name) !== ext) name = `${name}.${ext}`; // keep name/extension in sync
 
     if (isEditableExtension(name)) {
-      if (localFiles[name] !== undefined) { alert(`"${name}" already exists.`); return; }
+      if (localFiles[name] !== undefined) {
+        overlay.remove();
+        const result = await promptNameConflict(name, (n) => localFiles[n] !== undefined);
+        if (result.action === "cancel") return;
+        if (result.action === "rename") name = result.name;
+        // "replace" keeps the same name — it's overwritten below.
+      } else {
+        overlay.remove();
+      }
       if (activeTab) localFiles[activeTab] = codeArea.value;
       localFiles[name] = "";
-      fileOrder.push(name);
+      if (!fileOrder.includes(name)) fileOrder.push(name);
       renderTabs();
       setTab(name);
-      overlay.remove();
       return;
+    }
+
+    let replaceId = assetIdByName(name);
+    if (replaceId) {
+      overlay.remove();
+      const result = await promptNameConflict(name, (n) => assetNameExists(n));
+      if (result.action === "cancel") return;
+      if (result.action === "rename") { name = result.name; replaceId = null; }
+      // "replace" keeps replaceId set, so the existing asset doc gets overwritten below.
+    } else {
+      overlay.remove();
     }
 
     const mime = mimeForExtension(ext);
     const content = `data:${mime};base64,${btoa("")}`; // blank starter file
     try {
-      await addDoc(collection(db, "sites", currentSiteId, "assets"), {
-        name, mime, size: 0, content, uploadedBy: currentUser.uid, createdAt: serverTimestamp()
-      });
-      await logAction("asset_created", `Created file "${name}"`, currentSiteId);
-      overlay.remove();
+      if (replaceId) {
+        await updateDoc(doc(db, "sites", currentSiteId, "assets", replaceId), {
+          mime, size: 0, content, uploadedBy: currentUser.uid, updatedAt: serverTimestamp()
+        });
+        await logAction("asset_created", `Replaced file "${name}"`, currentSiteId);
+      } else {
+        await addDoc(collection(db, "sites", currentSiteId, "assets"), {
+          name, mime, size: 0, content, uploadedBy: currentUser.uid, createdAt: serverTimestamp()
+        });
+        await logAction("asset_created", `Created file "${name}"`, currentSiteId);
+      }
     } catch (err) {
       alert(`Could not create "${name}": ${err.message}`);
     }
