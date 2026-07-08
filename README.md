@@ -6,6 +6,7 @@
 ![Firebase](https://img.shields.io/badge/backend-Firebase-FFA000?logo=firebase&logoColor=white)
 ![Vanilla JS](https://img.shields.io/badge/frontend-vanilla%20JS-F7DF1E?logo=javascript&logoColor=black)
 ![Firebase Plan](https://img.shields.io/badge/Firebase%20plan-Spark%20free-4285F4)
+![License: MIT](https://img.shields.io/badge/license-MIT-green)
 
 Write a site's code in the browser, click save, and every page embedding the loader script picks it up immediately — no git push, no CI, no redeploy. One panel can manage as many sites as you want, with full version history and role-based access for a team.
 
@@ -64,6 +65,7 @@ cloud-code/
 │   └── site-loader.js        # Tiny script a connected site embeds to pull in its content
 ├── firestore.rules           # Cloud Firestore security rules
 ├── database.rules.json       # Realtime Database security rules
+├── LICENSE                   # MIT License
 └── README.md
 ```
 
@@ -444,7 +446,7 @@ A few things worth knowing if you build on this:
 
 ## License
 
-No license file is included yet. If you plan to let others use, fork, or contribute to this, consider adding a `LICENSE` — [MIT](https://choosealicense.com/licenses/mit/) is a common, permissive default for a project like this.
+Licensed under the [MIT License](./LICENSE) — free to use, modify, and distribute, including commercially, as long as the original copyright notice is kept. See the [`LICENSE`](./LICENSE) file for the full text.
 
 ---
 
